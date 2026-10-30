@@ -5,7 +5,7 @@ Git 用来保存工作台和店小秘的源码版本。GitHub 是可选的远程
 ## 第一次使用
 
 1. 在源码目录双击 **Git版本管理.cmd**。上方显示当前仓库目录和本地版本。
-2. 如需远程备份，在 GitHub 登录后创建一个 **Private（私有）** 仓库。工作台与店小秘各建一个空仓库；不要勾选自动创建 README、.gitignore 或许可证。建议名称分别为 `textile-workbench`、`dianxiaomi-uploader`。
+2. 可使用 Public（公开源码）或 Private（仅授权访问）仓库。现用统一仓库为 `https://github.com/BMingyue/Temu-`，工作台使用 `main` 分支，店小秘使用 `dianxiaomi-uploader` 分支，各自在原源码目录操作。两个源码目录都连接同一地址，不需要再建第二个仓库。
 3. 复制仓库页面的 HTTPS 地址，填入窗口，点击 **连接仓库**。地址不要包含密码或令牌。
 4. 点击 **同步到远程**，根据 Git 官方凭据窗口完成自己的登录。
 
