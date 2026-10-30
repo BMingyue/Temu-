@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Temu 数据采集助手</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <main>
+    <h1>Temu 数据采集助手</h1>
+    <p class="muted">只采集当前浏览器正在使用的店铺，结果保存到本机工作台</p>
+    <section class="summary">
+      <div><span>采集来源</span><strong id="phone">当前浏览器</strong></div>
+      <div><span>当前店铺</span><strong id="shop">--</strong></div>
+      <div><span>店铺进度</span><strong id="overall">0 / 1</strong></div>
+      <div class="eta-card"><span>预计剩余</span><strong id="eta">--</strong></div>
+    </section>
+    <div class="progress"><i id="progressBar"></i></div>
+    <section class="current">
+      <strong id="stage">等待开始</strong>
+      <p id="message">请先在浏览器中登录 Temu Seller Center。</p>
+      <small id="nextStep">下一步：识别当前浏览器店铺</small>
+    </section>
+    <section id="shops" class="shops"></section>
+    <pre id="log"></pre>
+    <footer>
+      <button id="start">开始/继续</button>
+      <button id="pause" class="secondary">暂停</button>
+      <button id="reset" class="danger">清除任务</button>
+    </footer>
+  </main>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "小狮子获取器 · 工作台买断版",
+  "version": "4.1.0",
+  "description": "工作台内置的小狮子商品与轮播图采集工具（买断授权）",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.temu.com/*"
+  ],
+  "action": {
+    "default_title": "小狮子获取器",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.temu.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icon.png"
+      ],
+      "matches": [
+        "https://*.temu.com/*"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

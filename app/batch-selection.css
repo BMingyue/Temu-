@@ -1,0 +1,11 @@
+.batch-selection{border:1px solid #dce3ec;border-radius:12px;background:#f8fafc;padding:12px;margin:12px 0;min-inline-size:0}
+.batch-selection-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.batch-selection-note{font-size:12px;color:#64748b;margin:8px 0 0;line-height:1.6}
+.batch-selection output{display:block}
+.batch-selection-dialog{width:min(1050px,92vw);max-height:88vh;margin:auto;inset:0;border:1px solid #cbd5e1;border-radius:16px;padding:22px;color:#1e293b;box-shadow:0 18px 70px #0f172a33}
+.batch-selection-dialog::backdrop{background:#0f172a66}
+.batch-selection-preview{max-height:48vh;overflow:auto;margin:14px 0}
+.batch-selection-dialog textarea{width:100%;resize:vertical;min-height:110px;font-family:monospace}
+.batch-row-check{display:inline-flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:8px;font-size:13px;white-space:nowrap}
+.batch-row-check input,input.batch-row-check{width:17px;height:17px;accent-color:#2563eb;cursor:pointer}
+tr[data-batch-selected="true"]{background:#eff6ff}

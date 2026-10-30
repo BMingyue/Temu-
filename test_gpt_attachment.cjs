@@ -1,0 +1,75 @@
+const assert=require('node:assert/strict');
+const vm=require('node:vm'),fs=require('node:fs');
+const context={module:{exports:{}},URL,DataTransfer:class{constructor(){this.files=[];this.items={add:item=>this.files.push(item)}}},Event:class{constructor(type){this.type=type}}};
+vm.runInNewContext(fs.readFileSync('./gpt_chrome_extension/content.js','utf8'),context);
+const {uploadControl,selectFiles,responseWaitDecision,uploadName,nameVisible,attachmentEvidence,canRetryPresend,inTaskChat,stableChatUrl,downloadableImageUrl,bestImageUrl,bestImageSource,isGeneratedImage,generatedCandidate,passivePage,explicitGenerationFailure}=context.module.exports;
+const addFilesButton={getClientRects:()=>[{}],getAttribute:key=>key==='aria-label'?'添加文件等内容':null,textContent:''};
+context.document={querySelectorAll:()=>[addFilesButton]};
+assert.equal(uploadControl(),addFilesButton);
+const resetsAfterChange={files:[],dispatchEvent(){this.files=[];this.changed=true}};
+selectFiles(resetsAfterChange,[{name:'reference.jpeg'},{name:'1.zip'}]);
+assert.equal(resetsAfterChange.changed,true);
+assert.equal(resetsAfterChange.files.length,0);
+const waiting={response_last_progress_at:new Date(100000).toISOString(),response_refresh_count:0};
+assert.equal(responseWaitDecision(waiting,100000+599000),null);
+assert.equal(responseWaitDecision(waiting,100000+604000),'refresh');
+assert.equal(responseWaitDecision({...waiting,response_refresh_count:1},100000+604000),'fail');
+assert.equal(passivePage('/library'),true);
+assert.equal(passivePage('/library/images'),true);
+assert.equal(passivePage('/'),false);
+assert.match(explicitGenerationFailure({assistantText:'已达到图片生成上限，请稍后再试',alertText:''}),/上限/);
+assert.match(explicitGenerationFailure({assistantText:"You've reached your image generation limit",alertText:''}),/limit/i);
+assert.match(explicitGenerationFailure({assistantText:'',alertText:'Something went wrong while generating'}),/wrong/i);
+assert.equal(explicitGenerationFailure({assistantText:'正在根据要求生成图片，请稍候',alertText:''}),'');
+
+const task={job_id:'9bcb5685805d4bca88bb5bbd53f620be',reference:{name:'reference.jpeg'},template_archive:{name:'1.zip'}};
+assert.equal(uploadName(task,task.template_archive),'9bcb5685805d-1.zip');
+assert.equal(nameVisible('1(20260924-011220).zip 压缩归档','1.zip'),true);
+assert.equal(nameVisible('9bcb5685805d-1.zip 压缩归档',uploadName(task,task.template_archive)),true);
+assert.equal(nameVisible('unrelated.zip','1.zip'),false);
+
+const screenshot={searchable:'1(20260924-011220).zip 压缩归档',imageCount:1,thumbnailCount:0,uploading:false};
+assert.equal(attachmentEvidence(task,screenshot).ready,true);
+assert.equal(attachmentEvidence(task,{...screenshot,searchable:'',imageCount:1}).ready,false);
+assert.equal(attachmentEvidence(task,{...screenshot,imageCount:0}).ready,false);
+assert.equal(attachmentEvidence(task,{...screenshot,uploading:true}).ready,false);
+assert.equal(attachmentEvidence(task,{...screenshot,searchable:'9bcb5685805d-1.zip 压缩归档'}).ready,true);
+assert.equal(canRetryPresend(task,{crossedSendBoundary:false,promptEntered:false},'/',true),true);
+assert.equal(canRetryPresend(task,{crossedSendBoundary:false,promptEntered:true},'/',true),true);
+assert.equal(canRetryPresend(task,{crossedSendBoundary:false,promptEntered:true},'/',false),false);
+assert.equal(canRetryPresend(task,{crossedSendBoundary:true,promptEntered:false},'/',true),false);
+assert.equal(inTaskChat('https://chatgpt.com/c/WEB:d5f99715-5a50-4c95-8ec1-cd1c1a34b5c4','https://chatgpt.com/c/WEB:d5f99715-5a50-4c95-8ec1-cd1c1a34b5c4'),true);
+assert.equal(inTaskChat('https://chatgpt.com/','https://chatgpt.com/c/WEB:d5f99715-5a50-4c95-8ec1-cd1c1a34b5c4'),false);
+assert.equal(inTaskChat('https://chatgpt.com/c/other','https://chatgpt.com/c/WEB:d5f99715-5a50-4c95-8ec1-cd1c1a34b5c4'),false);
+assert.equal(stableChatUrl('https://chatgpt.com/c/WEB:d5f99715-5a50-4c95-8ec1-cd1c1a34b5c4'),false);
+assert.equal(stableChatUrl('https://chatgpt.com/c/local-chatgpt%3A2bb3200c-0c97-48c1-bb5d-20b034265f8b'),false);
+assert.equal(stableChatUrl('https://chatgpt.com/c/6ab47ef3-de14-83e8-99b2-449e27b4fdd0'),true);
+assert.equal(downloadableImageUrl('https://chatgpt.com/backend-api/files/example'),'https://chatgpt.com/backend-api/files/example');
+assert.equal(downloadableImageUrl('https://evil.example/image.png'),'');
+const responsiveImage={
+  currentSrc:'https://oaiusercontent.com/preview.png',src:'https://oaiusercontent.com/fallback.png',
+  getAttribute:key=>key==='srcset'?'https://oaiusercontent.com/small.png 512w, https://oaiusercontent.com/full.png 2048w':null,
+  closest:()=>null
+};
+assert.equal(bestImageUrl(responsiveImage),'https://oaiusercontent.com/full.png');
+const unsafeLinkImage={currentSrc:'https://oaiusercontent.com/generated.png',src:'',getAttribute:()=>null,closest:()=>({getAttribute:()=> 'https://chatgpt.com/c/not-an-image'})};
+assert.equal(bestImageUrl(unsafeLinkImage),'https://oaiusercontent.com/generated.png');
+const blobImage={currentSrc:'blob:https://chatgpt.com/2bb81877-450e-4d0c-a607-a3b26f15dd01',src:'',getAttribute:()=>null,closest:()=>null};
+assert.equal(bestImageUrl(blobImage),'');
+assert.equal(bestImageSource(blobImage),'blob:https://chatgpt.com/2bb81877-450e-4d0c-a607-a3b26f15dd01');
+const foreignBlob={currentSrc:'blob:https://evil.example/bad',src:'',getAttribute:()=>null,closest:()=>null};
+assert.equal(bestImageSource(foreignBlob),'');
+assert.equal(isGeneratedImage({src:'https://chatgpt.com/backend-api/files/reference',alt:''}),false);
+assert.equal(isGeneratedImage({src:'https://chatgpt.com/backend-api/files/generated',alt:'generated image'}),true);
+assert.equal(isGeneratedImage({src:'https://oaiusercontent.com/generated.png',alt:''}),true);
+const userUpload={src:'https://chatgpt.com/backend-api/files/reference',alt:'reference.jpeg',closest:selector=>selector.includes('user')?{}:null};
+assert.equal(generatedCandidate(userUpload),false);
+const assistantUpload={src:'https://chatgpt.com/backend-api/files/upload',alt:'',closest:selector=>selector.includes('assistant')?{querySelectorAll:()=>[]}:null};
+assert.equal(generatedCandidate(assistantUpload),false);
+const generatedAction={getClientRects:()=>[{}],getAttribute:key=>key==='aria-label'?'Download image':null,textContent:''};
+const assistantGenerated={src:'https://chatgpt.com/backend-api/files/result',alt:'',closest:selector=>selector.includes('assistant')?{querySelectorAll:()=>[generatedAction]}:null};
+assert.equal(generatedCandidate(assistantGenerated),true);
+const source=fs.readFileSync('./gpt_chrome_extension/content.js','utf8');
+assert.doesNotMatch(source,/execCommand\('selectAll'/);
+assert.doesNotMatch(source,/requestSubmit\(/);
+console.log('GPT attachment evidence checks passed.');

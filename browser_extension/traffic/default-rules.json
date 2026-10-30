@@ -1,0 +1,15 @@
+{
+  "categories": ["小盖毯、午休毯"],
+  "tags": ["限时秒杀"],
+  "duration": 14,
+  "skuRules": [
+    {"spec": "40*50in-法兰绒", "price": "49"},
+    {"spec": "50*60in-法兰绒", "price": "68"},
+    {"spec": "60*80in-法兰绒", "price": "83"}
+  ],
+  "maxPages": 200,
+  "delayMs": 1200,
+  "scanPageDelayMs": 30000,
+  "timeoutMs": 60000,
+  "resultTimeoutMs": 60000
+}

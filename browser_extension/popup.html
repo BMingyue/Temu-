@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>织品工作台 · 统一助手</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <span class="logo">↻</span>
+      <div><h1>织品工作台 · 统一助手</h1><p>0.20.0 · 当前浏览器店铺 · 数据仅保存本机</p></div>
+    </header>
+
+    <section id="home-view" class="view active">
+      <h2>数据采集</h2>
+      <div class="tiles">
+        <button data-mode="seller"><span class="icon seller">↗</span><span><strong>订单＋流量</strong><small>订单、金额、物流费、退款与流量</small></span><b>›</b></button>
+        <button data-mode="products"><span class="icon products">▦</span><span><strong>商品＋活动</strong><small>商品、申报价、活动价及状态</small></span><b>›</b></button>
+        <button data-mode="ads"><span class="icon ads">◎</span><span><strong>广告</strong><small>广告花费与归因效果</small></span><b>›</b></button>
+        <button id="schedule-open"><span class="icon schedule">◷</span><span><strong>本地定时采集</strong><small>使用已登录页面，早晚按顺序采集</small></span><b>›</b></button>
+      </div>
+      <h2>运营工具</h2>
+      <div class="tiles">
+        <button id="traffic-open"><span class="icon seller">↗</span><span><strong>流量加速器</strong><small>14天规则、固定SKU价与逐件结果核验</small></span><b>›</b></button>
+        <button id="delisting-open"><span class="icon delisting">↓</span><span><strong>商品批量下架</strong><small>打开商品页并使用下架助手</small></span><b>›</b></button>
+        <button id="image-open"><span class="icon image">⇩</span><span><strong>悬停下载图片</strong><small>只对你授权的网站显示下载按钮</small></span><b>›</b></button>
+      </div>
+      <p id="status" role="status"></p>
+      <hr />
+      <button id="workbench-open" class="simple"><span><strong>打开本地织品工作台</strong><small>任务中心、经营数据与辅助分析</small></span><b>›</b></button>
+      <p id="workbench-status" role="status"></p>
+      <button id="workbench-retry" class="secondary">补传本地待同步数据</button>
+    </section>
+
+    <section id="schedule-view" class="view">
+      <button class="back" data-back>‹ 返回</button>
+      <h2>本地定时采集</h2>
+      <p class="help">到点后只使用这个浏览器中已登录的 Temu 页面，不保存账号密码，也不自动登录。</p>
+      <label class="line"><input id="morning-enabled" type="checkbox" /> 早间采集 <input id="morning-time" type="time" value="09:00" /></label>
+      <label class="line"><input id="night-enabled" type="checkbox" /> 晚间采集 <input id="night-time" type="time" value="21:00" /></label>
+      <fieldset><legend>采集内容</legend>
+        <label><input name="schedule-mode" value="seller" type="checkbox" checked /> 订单＋流量＋物流费</label>
+        <label><input name="schedule-mode" value="products" type="checkbox" checked /> 商品＋活动</label>
+        <label><input name="schedule-mode" value="ads" type="checkbox" /> 广告</label>
+      </fieldset>
+      <p id="schedule-status" class="status"></p>
+      <button id="schedule-save" class="primary">保存定时设置</button>
+    </section>
+
+    <section id="image-view" class="view">
+      <button class="back" data-back>‹ 返回</button>
+      <h2>悬停下载图片</h2>
+      <p class="help">开启后，把鼠标移到授权网页的图片上即可下载。图片保存在浏览器下载目录的指定子文件夹。</p>
+      <label class="line"><input id="image-enabled" type="checkbox" /> 开启功能</label>
+      <label>适用网址（每行一个开头）<textarea id="image-prefixes" rows="5" placeholder="https://example.com/"></textarea></label>
+      <label>下载子文件夹<input id="image-folder" type="text" value="Temu图片" /></label>
+      <p id="image-status" class="status"></p>
+      <button id="image-save" class="primary">保存并授权网站</button>
+    </section>
+  </main>
+  <script src="popup.js"></script>
+  <script src="workbench-popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小狮子获取器</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">
+        <img class="logo-icon" src="icon.png" alt="小狮子图标">
+        <span class="logo-text">小狮子获取器</span>
+      </div>
+    </div>
+
+    <!-- 登录视图 -->
+    <div id="loginView" class="view">
+      <div class="login-panel">
+        <h2 class="panel-title">账号登录</h2>
+
+        <form id="loginForm">
+          <div class="form-item">
+            <label for="loginAccount">账号</label>
+            <input type="text" id="loginAccount" placeholder="请输入账号" required>
+          </div>
+
+          <div class="form-item">
+            <label for="loginPassword">密码</label>
+            <input type="password" id="loginPassword" placeholder="请输入密码" required>
+          </div>
+
+          <div class="error-message" id="loginError"></div>
+
+          <button type="submit" class="btn btn-login">
+            <span>登录</span>
+          </button>
+        </form>
+
+        <div class="register-link">
+          <span>还没有账号？</span>
+          <a href="#" id="showRegisterBtn">立即注册</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 注册视图 -->
+    <div id="registerView" class="view" style="display: none;">
+      <div class="register-panel">
+        <h2 class="panel-title">账号注册</h2>
+
+        <form id="registerForm">
+          <div class="form-item">
+            <label for="registerAccount">账号</label>
+            <input type="text" id="registerAccount" placeholder="请输入账号" required>
+          </div>
+
+          <div class="form-item">
+            <label for="registerPassword">密码</label>
+            <input type="password" id="registerPassword" placeholder="请输入密码" required>
+          </div>
+
+          <div class="form-item">
+            <label for="registerName">名称（可选）</label>
+            <input type="text" id="registerName" placeholder="请输入名称">
+          </div>
+
+          <div class="info-message">
+            注册成功后需要管理员开通才能使用
+          </div>
+
+          <div class="error-message" id="registerError"></div>
+
+          <button type="submit" class="btn btn-register">
+            <span>注册</span>
+          </button>
+        </form>
+
+        <div class="login-link">
+          <span>已有账号？</span>
+          <a href="#" id="showLoginBtn">立即登录</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- 主界面视图 -->
+    <div id="mainView" class="view" style="display: none;">
+      <div class="settings-panel">
+        <div class="setting-item">
+          <label for="pageCount">采集页数</label>
+          <input type="number" id="pageCount" min="1" max="100" value="5">
+        </div>
+
+        <div class="setting-item">
+          <label for="pageDelay">翻页延迟 (秒)</label>
+          <input type="number" id="pageDelay" min="1" max="60" value="3">
+        </div>
+
+        <div class="setting-item">
+          <label for="minSales">最小销量</label>
+          <input type="number" id="minSales" min="0" value="0">
+        </div>
+
+        <div class="setting-item">
+          <label for="maxSales">最大销量</label>
+          <input type="number" id="maxSales" min="0" value="999999">
+        </div>
+      </div>
+
+      <div class="control-panel">
+        <button id="startBtn" class="btn btn-start">
+          <span class="btn-icon">▶</span>
+          <span>开始采集</span>
+        </button>
+        <button id="stopBtn" class="btn btn-stop" disabled>
+          <span class="btn-icon">■</span>
+          <span>停止采集</span>
+        </button>
+        <button id="exportBtn" class="btn btn-export">
+          <span class="btn-icon">↓</span>
+          <span>导出数据</span>
+        </button>
+      </div>
+
+      <div class="status-panel">
+        <div class="status-item">
+          <span class="status-label">状态:</span>
+          <span id="status" class="status-value">就绪</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">已采集:</span>
+          <span id="collected" class="status-value">0</span>
+        </div>
+        <div class="status-item">
+          <span class="status-label">账号:</span>
+          <span id="userAccount" class="status-value">-</span>
+        </div>
+      </div>
+
+      <div class="logout-panel" hidden>
+        <button id="logoutBtn" class="btn btn-logout">
+          <span>退出登录</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="auth.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

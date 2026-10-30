@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>生成图标</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #f0f0f0;
+      font-family: Arial, sans-serif;
+    }
+    canvas {
+      border: 1px solid #ccc;
+      margin: 10px;
+      background: white;
+    }
+    .container {
+      text-align: center;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      background: #ffd700;
+      border: none;
+      border-radius: 5px;
+      margin: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>TEMU采集器图标生成器</h2>
+    <canvas id="canvas" width="128" height="128"></canvas>
+    <br>
+    <button onclick="downloadIcon()">下载图标 (icon.png)</button>
+    <p>右键点击画布 → 图片另存为 → 保存为 icon.png</p>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // 绘制图标
+    function drawIcon() {
+      // 背景渐变
+      const gradient = ctx.createLinearGradient(0, 0, 128, 128);
+      gradient.addColorStop(0, '#ffd700');
+      gradient.addColorStop(1, '#ffed4e');
+      
+      // 圆形背景
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(64, 64, 60, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // 外圈
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.2)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      
+      // 闪电符号
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 70px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('⚡', 64, 64);
+    }
+    
+    drawIcon();
+    
+    function downloadIcon() {
+      const link = document.createElement('a');
+      link.download = 'icon.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+  </script>
+</body>
+</html>

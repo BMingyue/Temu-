@@ -1,0 +1,11 @@
+Firefox GPT 生图助手
+
+1. 在 Firefox 登录准备执行生图任务的 GPT 账号，并保持一个 https://chatgpt.com/ 页面。
+2. 在地址栏打开 about:debugging。
+3. 点击“此 Firefox”，再点击“临时载入附加组件”。
+4. 选择本文件夹中的 manifest.json。
+5. 回到 GPT 页面刷新一次。工作台应显示“Firefox 账号：已连接”。
+
+Firefox 的临时附加组件会在浏览器完全退出后失效。重新启动 Firefox 后，需要重复第 2～4 步。Chrome、Edge 和 Firefox 共用同一个扩展文件夹，但各自保留独立账号和任务身份。
+
+任务按 Chrome、Edge、Firefox 三个账号轮流分配。目标浏览器连续离线 15 分钟后，其他在线浏览器可以接管尚未发送的任务；已经发送的任务不会跨账号重发。

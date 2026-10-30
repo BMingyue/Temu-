@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "织品工作台 GPT 生图助手",
+  "version": "0.4.8",
+  "description": "在 Chrome、Edge 或 Firefox 的同一聊天中逐张生成主图与场景图，保存后短暂等待再继续。",
+  "permissions": ["storage", "downloads", "alarms"],
+  "host_permissions": ["https://chatgpt.com/*", "http://127.0.0.1:18769/*"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "scripts": ["config.js", "pairing.js", "service-worker.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "temu-gpt-image-helper@local.workbench",
+      "strict_min_version": "120.0"
+    }
+  },
+  "action": {"default_title": "GPT 生图助手", "default_popup": "popup.html"},
+  "content_scripts": [{
+    "matches": ["https://chatgpt.com/*"],
+    "js": ["config.js", "content.js"],
+    "run_at": "document_idle"
+  }]
+}
+
+
+
+
+
+

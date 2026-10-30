@@ -1,0 +1,22 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const context={module:{exports:{}},URL};
+vm.runInNewContext(fs.readFileSync('gpt_chrome_extension/content.js','utf8'),context);
+const api=context.module.exports;
+const quota='你已达到 Plus 套餐的图像生成请求上限。上限将在 3 小时后重置，届时可创建更多图像。';
+assert.equal(api.imageQuotaText(quota),quota);
+assert.ok(api.imageQuotaText("You've reached your image generation limit. Try again in 3 hours."));
+for(const text of ['图片生成失败，请再发送一次。','请先登录','违反安全政策，无法生成图片','讲解图像生成工具如何使用'])assert.equal(api.imageQuotaText(text),'');
+const task={prompt_marker:'WBSTEP-test-quota'};
+const user={textContent:task.prompt_marker,contains:()=>false,querySelectorAll:()=>[],compareDocumentPosition:()=>4,closest:()=>null};
+const paragraph={textContent:quota,closest:()=>null,contains:()=>false};
+let laterUser=false,generated=false;
+context.document={querySelector:()=>null,querySelectorAll(selector){
+ if(selector==='img')return generated?[{src:'https://example.test/generated/current.png',alt:'Generated image',closest:()=>null,getAttribute:()=>null}]:[];
+ if(selector.includes('main p'))return [paragraph];
+ if(selector.includes('"user"'))return laterUser?[user,{textContent:'manual followup',contains:()=>false}]:[user];
+ return [];
+}};
+assert.equal(api.workflowQuotaFailure(task).text,quota);
+generated=true;assert.equal(api.workflowQuotaFailure(task),null);
+generated=false;laterUser=true;assert.throws(()=>api.workflowQuotaFailure(task),/另一条用户消息/);
+console.log('Current-turn image quota detection and no-double-generation boundaries: OK');

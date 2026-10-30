@@ -1,0 +1,125 @@
+{
+  "manifest_version": 3,
+  "name": "织品工作台 · 统一助手",
+  "version": "0.20.11",
+  "description": "织品工作台统一插件：经营数据采集、运营工具、流量加速助手与本机数据同步。",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "cookies",
+    "webRequest",
+    "alarms",
+    "downloads",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://agentseller-us.temu.com/*",
+    "https://agentseller.temu.com/*",
+    "https://ads.temu.com/*",
+    "https://www.temu.com/*",
+    "http://127.0.0.1:18769/*",
+    "http://127.0.0.1:5173/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "scripts": [
+      "traffic-background.js",
+      "workbench-config.js",
+      "workbench-sync.js",
+      "workbench-auto.js",
+      "product-status-sync.js",
+      "workbench-daily-audit.js",
+      "extension-features.js",
+      "service-worker.js"
+    ],
+    "service_worker": "service-worker.js"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "temu-workbench@cutemomomo.local",
+      "strict_min_version": "121.0"
+    }
+  },
+  "action": {
+    "default_title": "打开织品工作台统一助手",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://agentseller-us.temu.com/*",
+        "https://agentseller.temu.com/*",
+        "https://ads.temu.com/*"
+      ],
+      "js": [
+        "accelerator-query.js",
+        "page-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://agentseller-us.temu.com/*",
+        "https://agentseller.temu.com/*",
+        "https://ads.temu.com/*"
+      ],
+      "css": [
+        "collector.css"
+      ],
+      "js": [
+        "content.js",
+        "workbench-panel-manager.js",
+        "workbench-daily.js",
+        "activity-evidence.js",
+        "activity-enrollment.js",
+        "price-window.js",
+        "delisting-assistant.js",
+        "promotion-audit.js",
+        "flow-gallery.js",
+        "local-flow-tools.js",
+        "product-state-evidence.js",
+        "enter-query.js",
+        "quick-nav.js",
+        "sidepanel.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.temu.com/*"
+      ],
+      "css": [
+        "lion-scraper.css"
+      ],
+      "js": [
+        "lion-scraper.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1:5173/*"
+      ],
+      "js": [
+        "workbench-web-bridge.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lion-icon.png"
+      ],
+      "matches": [
+        "https://www.temu.com/*"
+      ]
+    }
+  ],
+  "minimum_chrome_version": "110"
+}
