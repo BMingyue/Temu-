@@ -68,10 +68,12 @@ class Runner:
    try:self.context.close()
    except Exception:pass
    self.context=None
+  from gpt_browser_profiles import _ensure_runtime
+  executable=_ensure_runtime()
   if self.pw is None:
    from playwright.sync_api import sync_playwright
    self.pw=sync_playwright().start()
-  self.context=self.pw.chromium.launch_persistent_context(str(self.data/'gpt-browser'),channel='chrome',headless=False,accept_downloads=True,chromium_sandbox=True,no_viewport=True)
+  self.context=self.pw.chromium.launch_persistent_context(str(self.data/'gpt-browser'),executable_path=str(executable),headless=False,accept_downloads=True,chromium_sandbox=True,no_viewport=True)
   self.context.set_default_timeout(60000)
  def _logged_in(self,page):
   if urlsplit(page.url).hostname!='chatgpt.com':return False

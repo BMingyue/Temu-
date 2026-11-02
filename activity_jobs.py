@@ -470,18 +470,59 @@ def ingest_evidence(body, connect):
 
 
 def _collector_products(db, mall):
+    # Import at call time: product_rules also uses this module's size parser.
+    import product_rules
+
     result = {}
     duplicates = set()
+    by_spu = {}
+    saved_scope = db.execute("SELECT * FROM collector_snapshots WHERE dataset='products' AND mall_id=?", (mall,)).fetchone()
+    category_scope = {**dict(saved_scope), 'meta': json.loads(saved_scope['payload'])} if saved_scope else None
     for row in collector.current_records(db, "products", mall):
         value = json.loads(row["payload"])
         sku = _text(value.get("skuId"))
         if not sku:
             continue
-        item = {**value, "_captured": row["captured"]}
+        item = product_rules.enrich_platform_category({**value, "_captured": row["captured"]}, category_scope, mall)
         if sku in result and (result[sku].get("spuId"), result[sku].get("skcId")) != (item.get("spuId"), item.get("skcId")):
             duplicates.add(sku)
         result[sku] = item
+        by_spu.setdefault(_text(value.get("spuId")), []).append(item)
+    category_config = product_rules.load(db, mall)
+    for spu, items in by_spu.items():
+        category = product_rules.classify(items, category_config)
+        override = category_config.get('overrides', {}).get(spu, {}).get('category')
+        if override:
+            category.update(categoryName=override, categorySource='local_maintenance', categorySourceLabel='手动归类')
+        for item in items:
+            item['_productCategory'] = category
     return result, duplicates
+
+
+def _category_precheck(product, config):
+    """A size match cannot override an observed platform product category."""
+    category = (product or {}).get('_productCategory', {})
+    selected = _text(config.get('category'))
+    evidence = {key: category.get(key) for key in (
+        'categoryName', 'categorySource', 'platformCategoryId', 'platformCategoryName',
+        'platformCategoryPath', 'platformCategoryIds', 'platformCategoryConflict')}
+    if not selected or selected == '未分类':
+        return None, '', {**evidence, 'categoryMatchSource': 'no_category_filter'}
+    maintained = category.get('categorySource') == 'local_maintenance'
+    if not maintained and (category.get('platformCategoryConflict') or category.get('categorySource') == 'conflict' and (
+            category.get('platformCategoryId') or category.get('platformCategoryName'))):
+        return None, '商品的平台类目存在冲突，请更新商品目录并核对', {**evidence, 'categoryMatchSource': 'platform_conflict'}
+    official = bool(category.get('platformCategoryId') or category.get('platformCategoryName'))
+    if not official and not maintained:
+        return None, '', {**evidence, 'categoryMatchSource': 'legacy_specification'}
+    if not maintained and category.get('categoryName') in (None, '', '未分类'):
+        return None, '平台类目尚缺名称或业务类目映射，请补充类目规则', {**evidence, 'categoryMatchSource': 'platform_unmapped'}
+    names = [category.get('categoryName') or '']
+    if category.get('categorySource') == 'platform_category':
+        names += category.get('platformCategoryPath') or []
+    matched = selected.casefold() in {str(name).strip().casefold() for name in names}
+    reason = '' if matched else f'商品类目 {category.get("categoryName") or "待确认"} 不属于当前{selected}预设'
+    return matched, reason, {**evidence, 'categoryMatchSource': 'local_maintenance' if maintained else 'platform_category'}
 
 
 def _inventory(candidate, config):
@@ -505,6 +546,9 @@ def _make_item(candidate, product, duplicate, config, evidence_captured=None):
     displayed_spec = normalize_variant(candidate.get("specification"))
     spec,mapping,size_error = match_size_rule(candidate.get("specification"),config["size_prices"])
     reasons = [size_error] if size_error else []
+    category_match, category_reason, category_evidence = _category_precheck(product, config)
+    if category_reason:
+        reasons.append(category_reason)
     identity_ok = bool(product) and not duplicate
     old_price = _money(product.get("declaredPrice"), "原申报价", True) if product else None
     if duplicate:
@@ -556,7 +600,7 @@ def _make_item(candidate, product, duplicate, config, evidence_captured=None):
     if floor is not None and planned_activity < floor:
         reasons.append("活动预留价打75折后低于日常底价，请检查两档价格")
     item_key = "|".join((candidate["spuId"], candidate["skcId"], candidate["skuId"]))
-    floor_only = candidate.get("adjustable") is False and identity_ok and bool(mapping)
+    floor_only = candidate.get("adjustable") is False and identity_ok and bool(mapping) and not category_reason
     if reasons:
         state = "ineligible"
         action = "direct_floor_only" if floor_only else "blocked"
@@ -581,6 +625,7 @@ def _make_item(candidate, product, duplicate, config, evidence_captured=None):
         "identityResolution": candidate.get("identityResolution") or "activity_page_sku_id",
         "eligible": not reasons, "priceActionAllowed": action in ("adjust_then_enroll", "direct_floor_only"),
         "action": action, "blockedReasons": reasons,
+        "categoryMatched": category_match, "categoryEvidence": category_evidence,
         "sourceCaptured": (product or {}).get("_captured"), "state": state,
         "stateHistory": ["pending_collection"] + (["matched"] if identity_ok else []) + ([state] if state not in ("pending_collection", "matched") else []),
     }
@@ -624,6 +669,11 @@ def two_price_precheck(candidate, product, duplicate, config, captured):
     preset_units.discard('')
     category_matched = bool(rule) or bool(_dimension_unit(dimension) in preset_units)
     waiting, blocked, notices = [], [], []
+    category_match, category_reason, category_evidence = _category_precheck(product, config)
+    if category_match is not None:
+        category_matched = category_match
+    if category_reason:
+        waiting.append(category_reason)
     if size_error:
         blocked.append(size_error)
     if not dimension:
@@ -695,6 +745,7 @@ def two_price_precheck(candidate, product, duplicate, config, captured):
         'eligible': status == 'ready', 'status': status, 'priceState': price_state,
         'priceStateLabel': labels[price_state], 'category': config.get('category', '未分类'),
         'categoryMatched': category_matched,
+        'categoryEvidence': category_evidence,
         'matchedSpec': matched_spec if rule else None,
         'blockedReasons': blocked, 'pendingReasons': waiting, 'notices': notices,
         'barePrice': amount_string(floor) if floor is not None else None,

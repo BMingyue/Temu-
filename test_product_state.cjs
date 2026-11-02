@@ -90,6 +90,7 @@ function harness(options={}) {
       if(options.switchOnResult)switched=true;
       return {success:true,sourceMallId:options.wrongHeader?'999':'123',
         complete:!options.partial,total:1,collectedSkcs:1,enrollmentCount:1,pageSize:100,pages:1,
+        ...(command==='PRODUCTS' ? {categoryCoverage:options.categoryCoverage,categoryDiagnostics:options.categoryDiagnostics,categoryTaxonomies:options.categoryTaxonomies} : {}),
         rows:command==='PRODUCTS'?[{spuId:'100001',skcId:'200001',skuId:'300001',onSale:true}]:[{enrollId:'400001',spuId:'100001',skcId:'200001',skuId:'300001'}]};
     },
     chrome:{
@@ -116,6 +117,24 @@ test('automatic collection uses own inactive tab and stores both complete datase
   assert.equal(h.saved[1].path,'/api/client/products/activities/upload');
   assert.deepEqual(h.closed,[2]);assert.equal(h.context.wbAutoRunning,false);
   assert.ok(h.read().productFinishedAt);
+});
+test('product sync persists independent taxonomy evidence and exposes category coverage in its summary',async()=>{
+  const categoryDiagnostics={parser:'temu_leaf_cat_v1',productCount:1,sourceCounts:{temu_product_catalog:1},fieldNames:['leafCat.catId']};
+  const categoryTaxonomies=[{leafCat:{catId:'11',catName:'男T恤'},categories:{cat1:{catId:1,catName:'服装'}}}];
+  const categoryCoverage={skuCount:1,classifiedSkus:1,missingSkus:0,conflictSkus:0};
+  const h=harness({categoryCoverage,categoryDiagnostics,categoryTaxonomies});await h.context.runTick(h.sourceTab,true,'123');
+  const meta=h.saved[0].body.crawl_result;
+  assert.equal(meta.category_diagnostics.parser,'temu_leaf_cat_v1');
+  assert.deepEqual(JSON.parse(JSON.stringify(meta.category_taxonomies)),categoryTaxonomies);
+  assert.deepEqual(JSON.parse(JSON.stringify(meta.category_coverage)),categoryCoverage);
+  assert.equal(meta.complete,true);assert.match(h.read().message,/平台类目 1\/1 个 SKU/);
+  assert.doesNotMatch(h.read().message,/类目待补采/);
+});
+test('zero category coverage does not invalidate the catalog but is explicit in synchronization results',async()=>{
+  const h=harness({categoryCoverage:{skuCount:1,classifiedSkus:0,missingSkus:1,conflictSkus:0}});
+  await h.context.runTick(h.sourceTab,true,'123');
+  assert.equal(h.saved.length,2);assert.equal(h.saved[0].body.crawl_result.complete,true);
+  assert.ok(h.read().productFinishedAt);assert.match(h.read().message,/平台类目 0\/1 个 SKU（类目待补采）/);
 });
 test('changed shop prevents upload and cleans up own tab',async()=>{
   const h=harness({switchOnResult:true});await h.context.runTick(h.sourceTab);

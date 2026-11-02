@@ -5,6 +5,10 @@
   const ORIGIN="https://agentseller-us.temu.com",PATH="/main/flux-analysis";
   const ENDPOINT="/api/flow/analysis/list",PAGE_SIZE=100,MAX_IDS=20,US_SITE=100;
   const STATE_RULE="flow_grow_badge_v1";
+  const ATTENTION_RULE="temu_native_flow_limit_v1";
+  // Historical official flux-analysis enum + its Chinese translation map:
+  // numeric 2 alone renders 商品流量待关注; 1/3 are different warning labels.
+  const ATTENTION_LABELS={0:"无商品流量待关注标记",1:"商品流量预测将下滑",2:"商品流量待关注",3:"商品流量近期有下滑"};
   // The seller page renders its product-info badge only for numeric status 1.
   // Its US site selector explicitly keeps siteId 100; product ID input becomes
   // a numeric productIdList. No eligibility or Max-mode filters are involved.
@@ -87,17 +91,61 @@
       active.add(productId);
     }
     if(items.length!==total)throw Error("加速器小批列表未读全：已返回 "+items.length+" / "+total+"，不能判定未开启");
+    const attention=new Map();
+    if(payload.includeTrafficAttention===true){
+      // Read native rows without growing/eligibility/warning filters. Membership
+      // in the separate enabled set cannot establish this independent badge.
+      const attentionBody={pageSize:PAGE_SIZE,pageNumber:1,timeDimension:1,productIdList:productIds.map(Number),siteIdList:[US_SITE]};
+      const attentionResponse=await postFn(ENDPOINT,attentionBody,{...headers},{label:"商品流量待关注原生标记"});
+      assertContext();
+      const value=attentionResponse?.result;
+      if(!object(attentionResponse)||attentionResponse.success!==true||!object(value)||!Array.isArray(value.pageItems)||!Number.isSafeInteger(value.total)||value.total<0){
+        throw Error("流量待关注原生列表未明确成功或缺少有效 pageItems/total，本批未保存");
+      }
+      if(value.total>productIds.length||value.pageItems.length!==value.total||value.pageItems.length>PAGE_SIZE){
+        throw Error("流量待关注原生列表未读全或超出本批分页上界，本批未保存");
+      }
+      if((Object.hasOwn(value,"pageNumber")&&value.pageNumber!==1)||(Object.hasOwn(value,"pageSize")&&value.pageSize!==PAGE_SIZE)){
+        throw Error("流量待关注原生列表页码或每页条数不匹配");
+      }
+      for(const scope of [attentionResponse,value]){
+        for(const key of ["mallId","mall_id"]){
+          if(Object.hasOwn(scope,key)&&id(scope[key])!==mall)throw Error("流量待关注原生列表返回其他店铺数据");
+        }
+        if((Object.hasOwn(scope,"siteId")&&scope.siteId!==US_SITE)||
+           (Object.hasOwn(scope,"siteName")&&!usSiteName(scope.siteName))||
+           (Object.hasOwn(scope,"siteIdList")&&(!Array.isArray(scope.siteIdList)||scope.siteIdList.length!==1||scope.siteIdList[0]!==US_SITE))){
+          throw Error("流量待关注原生列表返回其他站点范围");
+        }
+      }
+      for(const item of value.pageItems){
+        if(!object(item))throw Error("流量待关注原生商品行结构无效");
+        const productId=id(item.productId);
+        if(!productId||!requested.has(productId)||attention.has(productId))throw Error("流量待关注原生列表商品范围外或身份重复");
+        if(item.siteId!==US_SITE||!usSiteName(item.siteName))throw Error("流量待关注原生商品行站点不匹配");
+        for(const key of ["mallId","mall_id"]){
+          if(Object.hasOwn(item,key)&&id(item[key])!==mall)throw Error("流量待关注原生商品行店铺不匹配");
+        }
+        const code=Object.hasOwn(item,"flowLimitStatus")&&Number.isInteger(item.flowLimitStatus)&&Object.hasOwn(ATTENTION_LABELS,item.flowLimitStatus)?item.flowLimitStatus:null;
+        attention.set(productId,code);
+      }
+    }
     const diagnostics=[];
     const rows=productIds.map(productId=>{
       const enabled=active.has(productId),message=enabled?
         "商品信息存在“流量加速中”标志：原生 flowGrowStatus=1":
         "本批同店美国站完整“流量加速中”集合已核对；商品不在集合，按用户确认的标志规则判为未开启";
       diagnostics.push({spuId:productId,code:enabled?"badge_present":"badge_absent",message});
+      const code=attention.get(productId)??null;
       return {spuId:productId,skcId:"",skuId:"",siteId:US_SITE,siteName:"美国站",status:enabled?"enabled":"disabled",
-        sourceUrl:ORIGIN+PATH,evidence:message};
+        sourceUrl:ORIGIN+PATH,evidence:message,
+        ...(payload.includeTrafficAttention===true?{trafficAttention:code===null?null:code===2,flowLimitStatus:code,
+          trafficAttentionSource:code===null?"":ATTENTION_RULE,trafficAttentionLabel:code===null?"":ATTENTION_LABELS[code]}:{})};
     });
     return {success:true,sourceMallId:mall,stateRule:STATE_RULE,rows,missingIds:[],unknownIds:[],
-      rawCount:items.length,total,pages:1,complete:true,detailRequests:0,diagnostics};
+      rawCount:items.length,total,pages:1,complete:true,detailRequests:0,diagnostics,
+      ...(payload.includeTrafficAttention===true?{trafficAttentionRule:ATTENTION_RULE,trafficAttentionRows:attention.size,
+        trafficAttentionKnown:rows.filter(row=>typeof row.trafficAttention==="boolean").length}: {})};
   }
   const api={readBatch};
   if(typeof module!=="undefined"&&module.exports)module.exports=api;

@@ -66,7 +66,7 @@ export default function FeatureCenter({ preferredMall = '', open }: { preferredM
   }
   const currentShop = useMemo(() => shops.find((shop) => String(shop.mall_id) === mall), [shops, mall]);
   return <div className="feature-center">
-    {open && <section className="panel"><div className="sectionhead"><div><h2>流量加速器</h2><p>通过统一工作台插件打开实际操作面板，先核对规则和只读扫描，再按需提交开启。</p></div><span className="tag">已整合 v1.0.6</span></div><Button onClick={() => open('traffic-accelerator')}>进入流量加速器</Button></section>}
+    {open && <section className="panel"><div className="sectionhead"><div><h2>流量加速器</h2><p>通过统一工作台插件打开实际操作面板，先核对规则和只读扫描，再按需提交开启。</p></div><span className="tag">已整合 v1.0.7</span></div><Button onClick={() => open('traffic-accelerator')}>进入流量加速器</Button></section>}
     <div className="banner">
       <span><strong>本地只读运营辅助</strong><br />使用当前浏览器对应店铺已经采集到本机的数据。核查结果不会自动报名活动、调价、加入加速器或下架商品。</span>
     </div>

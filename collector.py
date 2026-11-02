@@ -18,14 +18,14 @@ PATHS={
 }
 LABELS={'products':'商品目录','activities':'活动价格','orders':'订单明细','returns':'退货退款','shipping':'精准物流费用','ads':'广告日报','flow':'店铺流量','daily':'每日必做巡检','accelerators':'商品加速器状态'}
 FIELDS={
- 'products':['spuId','skcId','skuId','skuCode','imageUrl','declaredPrice','skuCategory','properties','specification','lifecycleStatus','priceAdjustable','onSale','saleStatusSource','currency'],
+ 'products':['spuId','skcId','skuId','skuCode','imageUrl','declaredPrice','skuCategory','properties','specification','lifecycleStatus','priceAdjustable','onSale','saleStatusSource','currency','categoryId','categoryName','categoryPath','categoryIds','categorySource'],
  'activities':['enrollId','spuId','skcId','skuId','skuCode','siteId','siteName','activityType','activityTypeName','activityName','statusKey','sessionStatus','sessionStatusTag','cancelReviewStatus','sessionStartTime','sessionEndTime','enrollTime','activityStock','remainingStock','currency','dailyPrice','activityPrice','discountRate','properties'],
  'orders':['fulfillmentMode','queryType','parentOrderSn','orderSn','skuId','temuSkuId','productSkcId','productSpuId','extCodeList','originQuantity','parentConfirmTimeStr','money','recoveredFromReturnRefund'],
  'returns':['parentAfterSalesSn','afterSalesSn','parentOrderSn','orderSn','productSkuId','temuSkuId','productSkcId','productSpuId','afterSalesType','afterSalesTypeDesc','afterSalesStatus','afterSalesStatusDesc','createdAt','completedAt','applyReturnGoodsNumber','returnGoodsNumber','rejectGoodsNumber','orderGoodsNumber','reasonCode','reasonDesc','goodsName','goodsSpec'],
  'shipping':['parent_order_sn','package_sn','tracking_no','carrier','service_name','lookup_status','online_shipping_amount_usd','source'],
  'ads':['date','response_ok','values'], 'flow':['time_dimension','data'],
  'daily':['date','captured_at','status','traffic','consultations','orders','steps','warnings','source_urls'],
- 'accelerators':['spuId','skcId','skuId','siteName','status','price','currency','priceKind','sourceUrl','evidence'],
+ 'accelerators':['spuId','skcId','skuId','siteName','status','price','currency','priceKind','sourceUrl','evidence','trafficAttention','flowLimitStatus','trafficAttentionSource','trafficAttentionLabel'],
 }
 
 def sanitize(value,depth=0):
@@ -47,10 +47,27 @@ def key_for(kind,row):
  for key in needed:
   if row.get(key) is None or str(row[key]).strip()=='':raise ValueError(f'{LABELS[kind]}缺少标识：{key}')
  if kind=='products' and 'onSale' in row and not isinstance(row['onSale'],bool):raise ValueError('在售状态必须为布尔值')
+ if kind=='products':
+  for field in ('categoryId','categoryName','categorySource'):
+   if field in row and (not isinstance(row[field],str) or len(row[field])>200 or any(ord(c)<32 for c in row[field])):raise ValueError('商品类目字段无效：'+field)
+  for field in ('categoryPath','categoryIds'):
+   if field in row and (not isinstance(row[field],list) or len(row[field])>30 or any(not isinstance(value,str) or not value.strip() or len(value)>200 or any(ord(c)<32 for c in value) for value in row[field])):raise ValueError('商品类目路径无效：'+field)
+  if row.get('categoryId') and not re.fullmatch(r'\d{1,40}',row['categoryId']):raise ValueError('商品类目标识无效')
+  if any(not re.fullmatch(r'\d{1,40}',value) for value in row.get('categoryIds',[])):raise ValueError('商品类目路径标识无效')
  if kind=='accelerators':
   if row.get('status') not in ('enabled','eligible','max_eligible','disabled','unknown'):raise ValueError('加速器状态无效')
   if row.get('price') is not None and (not row.get('currency') or row.get('priceKind') not in ('current','offer')):raise ValueError('加速器价格缺少币种或报价类型')
   if not str(row.get('sourceUrl','')).startswith(('https://agentseller.temu.com/','https://agentseller-us.temu.com/')):raise ValueError('加速器证据来源无效')
+  if any(field in row for field in ('trafficAttention','flowLimitStatus','trafficAttentionSource','trafficAttentionLabel')):
+   flag=row.get('trafficAttention');code=row.get('flowLimitStatus');source=row.get('trafficAttentionSource','');label=row.get('trafficAttentionLabel','')
+   if flag is not None and type(flag) is not bool:raise ValueError('流量待关注状态必须为布尔值或未知')
+   if not isinstance(source,str) or not isinstance(label,str) or len(label)>100 or any(ord(c)<32 for c in label):raise ValueError('流量待关注来源或标签无效')
+   if flag is None:
+    if code is not None or source or label:raise ValueError('未知流量待关注不能携带已确认标记')
+   else:
+    if type(code) is not int or code not in (0,1,2,3) or flag!=(code==2) or source!='temu_native_flow_limit_v1':raise ValueError('流量待关注原生证据不一致')
+    origin=urlparse(str(row.get('sourceUrl','')))
+    if origin.scheme!='https' or origin.hostname!='agentseller-us.temu.com' or origin.path!='/main/flux-analysis' or row.get('siteName')!='美国站':raise ValueError('流量待关注证据必须来自美国站原生流量列表')
  if kind=='flow':
   if type(row['time_dimension']) is not int or row['time_dimension'] not in range(6) or not isinstance(row.get('data'),dict):raise ValueError('流量维度或报表格式发生变化')
  if kind=='ads':

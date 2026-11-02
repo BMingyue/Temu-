@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "织品工作台 · 统一助手",
-  "version": "0.20.11",
+  "version": "0.20.16",
   "description": "织品工作台统一插件：经营数据采集、运营工具、流量加速助手与本机数据同步。",
   "permissions": [
     "storage",

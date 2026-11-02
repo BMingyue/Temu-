@@ -29,8 +29,9 @@ try {
             if (IsWorkbench $Link.WorkingDirectory) { $Target = $Link.WorkingDirectory }
         }
     }
-    Add-Type -AssemblyName System.Windows.Forms
     if (-not (IsWorkbench $Target)) {
+        if ($Yes) { throw '无法确认原工作台目录；无人值守更新请通过 -Target 指定有效安装目录。' }
+        Add-Type -AssemblyName System.Windows.Forms
         $Picker = New-Object System.Windows.Forms.FolderBrowserDialog
         $Picker.Description = '请选择原来的织品工作台安装文件夹（不要选择这次解压的更新包）'
         if ($Picker.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { throw '已取消选择安装目录。' }
@@ -39,6 +40,7 @@ try {
     }
     if (-not (IsWorkbench $Target)) { throw '所选文件夹不是完整的织品工作台安装目录。' }
     if (-not $CheckOnly -and -not $Yes) {
+        Add-Type -AssemblyName System.Windows.Forms
         $Prompt = '将更新此工作台：' + "`r`n" + $Target + "`r`n`r`n" +
             $Manifest.base_version + ' → ' + $Manifest.target_version + "`r`n" +
             '账号、店铺、任务与图片保持原位。请先正常结束任务，并关闭专用浏览器和店小秘工具。现在开始更新？'
@@ -60,7 +62,7 @@ try {
         & $Python -E -X utf8 -B $Helper --package $PSScriptRoot --target $Target --apply --launch
     }
     if ($LASTEXITCODE -ne 0) { throw '更新没有完成。请保留上面的提示和程序旁的备份文件夹，交给负责人。' }
-    if (-not $CheckOnly) { [Windows.Forms.MessageBox]::Show('更新完成。以后仍使用原来的桌面“织品工作台”。','织品工作台更新') | Out-Null }
+    if (-not $CheckOnly -and -not $Yes) { [Windows.Forms.MessageBox]::Show('更新完成。以后仍使用原来的桌面“织品工作台”。','织品工作台更新') | Out-Null }
     exit 0
 } catch {
     Write-Host ('更新未完成：' + $_.Exception.Message) -ForegroundColor Red

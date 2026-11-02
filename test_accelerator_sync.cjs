@@ -25,10 +25,12 @@ function harness(options={}){
    queries++;
    if(options.queryError&&queries===options.queryError)throw Error('原生查询失败');
    if(options.switchShop)changed=true;
-   const rows=payload.productIds.filter(id=>id!==options.missing).map((id,index)=>row(id,options.unknown===id?'unknown':options.allDisabled||index%2?'disabled':'enabled'));
+   const rows=payload.productIds.filter(id=>id!==options.missing).map((id,index)=>({...row(id,options.unknown===id?'unknown':options.allDisabled||index%2?'disabled':'enabled'),
+    ...(options.attention?{trafficAttention:index===0,flowLimitStatus:index===0?2:0,trafficAttentionSource:'temu_native_flow_limit_v1',trafficAttentionLabel:index===0?'商品流量待关注':'无商品流量待关注标记'}:{trafficAttention:null,flowLimitStatus:null,trafficAttentionSource:'',trafficAttentionLabel:''})}));
    if(options.extra)rows.push(row(999999));if(options.duplicate)rows.push(rows[0]);
    const activeCount=rows.filter(value=>value.status==='enabled').length;
-   return {success:true,stateRule:STATE_RULE,sourceMallId:options.wrongMall?'999':'123',rows,complete:!options.incomplete,rawCount:activeCount,total:activeCount,pages:1,...options.queryReply};
+   return {success:true,stateRule:STATE_RULE,trafficAttentionRule:'temu_native_flow_limit_v1',trafficAttentionRows:options.attention?rows.length:0,trafficAttentionKnown:options.attention?rows.length:0,
+    sourceMallId:options.wrongMall?'999':'123',rows,complete:!options.incomplete,rawCount:activeCount,total:activeCount,pages:1,...options.queryReply};
   },
   chrome:{storage:{local:{get:async()=>({'temuCollectorState.v2':options.manual||{status:'done'}})}},
    tabs:{create:async value=>{const tab={...value,id:2,status:'complete'};tabs.set(2,tab);created.push(tab);return tab},
@@ -51,6 +53,35 @@ test('queries every on-sale SPU with a complete badge-rule result in bounded nat
  assert.ok(h.saved.every(item=>item.body.crawl_result.state_rule===STATE_RULE));
  assert.deepEqual(h.saved.map(item=>[item.body.crawl_result.raw_count,item.body.crawl_result.total]),[[10,10],[10,10],[2,2]]);
  assert.ok(h.read().acceleratorFinishedAt);assert.equal(h.context.wbAutoRunning,false);
+});
+test('attention is requested and uploaded with the same existing switch rows and parser proof',async()=>{
+ const h=harness({ids:['100001','100002'],attention:true,queryReply:{trafficAttentionRule:'temu_native_flow_limit_v1',trafficAttentionRows:2,trafficAttentionKnown:2}});
+ await h.run();
+ assert.equal(h.calls.find(call=>call.command==='ACCELERATORS_QUERY').payload.includeTrafficAttention,true);
+ assert.equal(h.saved.length,1);
+ assert.deepEqual(JSON.parse(JSON.stringify(h.saved[0].body.rows.map(row=>[row.spuId,row.status,row.trafficAttention,row.flowLimitStatus]))),[['100001','enabled',true,2],['100002','disabled',false,0]]);
+ assert.equal(h.saved[0].body.crawl_result.traffic_attention_rule,'temu_native_flow_limit_v1');
+ assert.equal(h.saved[0].body.crawl_result.traffic_attention_known,2);
+ assert.equal(h.read().acceleratorResult.enabled,1);assert.equal(h.read().acceleratorResult.disabled,1);
+});
+test('old attention parsers and incompatible attention coverage cannot claim completed collection',async()=>{
+ for(const queryReply of [{trafficAttentionRule:undefined},{trafficAttentionRule:'old'}, {trafficAttentionRows:null},{trafficAttentionRows:21},
+  {trafficAttentionRows:-1},{trafficAttentionKnown:'0'},{trafficAttentionKnown:1},{trafficAttentionRows:0,trafficAttentionKnown:1}]){
+  const h=harness({queryReply});await h.run();
+  assert.equal(h.saved.length,0);assert.match(h.read().acceleratorError,/流量待关注/);assert.equal(h.read().acceleratorFinishedAt,undefined);
+ }
+});
+test('missing or contradictory attention fields cannot upload while explicit unknown stays unknown',async()=>{
+ const unknown={...row('100001'),trafficAttention:null,flowLimitStatus:null,trafficAttentionSource:'',trafficAttentionLabel:''};
+ for(const patch of [{trafficAttention:undefined},{trafficAttention:'true'},{flowLimitStatus:2},
+  {trafficAttention:false,flowLimitStatus:2,trafficAttentionSource:'temu_native_flow_limit_v1',trafficAttentionLabel:'商品流量待关注'},
+  {trafficAttention:true,flowLimitStatus:'2',trafficAttentionSource:'temu_native_flow_limit_v1',trafficAttentionLabel:'商品流量待关注'},
+  {trafficAttention:true,flowLimitStatus:2,trafficAttentionSource:'old',trafficAttentionLabel:'商品流量待关注'}]){
+  const h=harness({ids:['100001'],queryReply:{rows:[{...unknown,...patch}],rawCount:1,total:1}});await h.run();
+  assert.equal(h.saved.length,0);assert.match(h.read().acceleratorError,/流量待关注/);
+ }
+ const h=harness({ids:['100001']});await h.run();assert.equal(h.saved.length,1);
+ assert.equal(h.saved[0].body.rows[0].trafficAttention,null);assert.ok(h.read().acceleratorFinishedAt);
 });
 test('missing or unknown rows violate the badge contract and cannot be fabricated or uploaded',async()=>{
  for(const options of [{missing:'100001'},{unknown:'100001'}]){

@@ -26,6 +26,7 @@ def main():
     python=bundle/'runtime/python/python.exe'
     result={'bundle':str(bundle)}
     expected_uploader=json.loads((bundle/'workbench-components.json').read_text(encoding='utf-8'))['uploader']['version']
+    expected_traffic=json.loads((bundle/'版本信息.json').read_text(encoding='utf-8'))['traffic_accelerator']
     env=os.environ.copy()
     for name in ('PYTHONHOME','PYTHONPATH','TCL_LIBRARY','TK_LIBRARY'):
         env.pop(name,None)
@@ -83,13 +84,13 @@ with sync_playwright() as pw:
         page.screenshot(path=sys.argv[2],full_page=True)
         page.get_by_role('navigation',name='工作板块').get_by_role('button',name='维护',exact=False).click()
         page.get_by_role('navigation',name='板块工具').get_by_role('button',name='流量加速器',exact=True).click()
-        page.get_by_text('工作台统一入口 · 已整合流量加速助手 v1.0.6',exact=True).wait_for()
+        page.get_by_text('工作台统一入口 · 已整合流量加速助手 v'+sys.argv[4],exact=True).wait_for()
         assert not errors,errors
         print(json.dumps({'rendered':True,'listing':True,'traffic':True,'errors':errors}))
     finally:
         browser.close()
 """
-                browser_check=subprocess.run([str(python),'-c',browser_code,str(bundle/'runtime/gpt-chrome/chrome-win64/chrome.exe'),str(args.report.parent.resolve()/'portable-workbench.png'),expected_uploader],cwd=bundle,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',creationflags=flags,timeout=45)
+                browser_check=subprocess.run([str(python),'-c',browser_code,str(bundle/'runtime/gpt-chrome/chrome-win64/chrome.exe'),str(args.report.parent.resolve()/'portable-workbench.png'),expected_uploader,expected_traffic],cwd=bundle,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding='utf-8',creationflags=flags,timeout=45)
                 if browser_check.returncode: raise RuntimeError(browser_check.stderr)
                 result['portable_browser']=json.loads(browser_check.stdout)
                 executable=bundle/'local_tools/dxm-uploader/店小秘自动上架.exe'

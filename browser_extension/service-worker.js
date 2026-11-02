@@ -3,7 +3,22 @@
 // importScripts is unavailable in that document context, so guard the call.
 if (typeof importScripts === "function") importScripts("traffic-background.js", "workbench-config.js", "workbench-sync.js", "workbench-auto.js", "product-status-sync.js", "workbench-daily-audit.js", "extension-features.js");
 
+// Reattach only the local UI bridge after extension reload. Existing workbench
+// tabs retain their UI state; no seller tab, collector or traffic task is run.
+async function wbReconnectLocalWebBridges() {
+  if (typeof chrome.scripting?.executeScript !== "function" || typeof chrome.tabs?.query !== "function") return {attempted:0,connected:0};
+  const tabs = await chrome.tabs.query({url:["http://127.0.0.1:5173/*"]});
+  const targets = tabs.filter(tab => {
+    try { return Number.isInteger(tab.id) && new URL(tab.url || "").origin === "http://127.0.0.1:5173"; } catch { return false; }
+  });
+  const results = await Promise.allSettled(targets.map(tab => chrome.scripting.executeScript({target:{tabId:tab.id,frameIds:[0]},files:["workbench-web-bridge.js"]})));
+  return {attempted:targets.length,connected:results.filter(result => result.status === "fulfilled").length};
+}
+wbReconnectLocalWebBridges().catch(() => {});
+chrome.runtime.onStartup?.addListener(() => { wbReconnectLocalWebBridges().catch(() => {}); });
+
 chrome.runtime.onInstalled.addListener(async () => {
+  await wbReconnectLocalWebBridges().catch(() => {});
   const tabs = await chrome.tabs.query({url:["https://agentseller-us.temu.com/*","https://agentseller.temu.com/*","https://ads.temu.com/*"]});
   await Promise.all(tabs.filter((tab) => tab.id).map((tab) => chrome.tabs.reload(tab.id).catch(() => null)));
 });

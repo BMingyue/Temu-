@@ -56,6 +56,11 @@ def resolve_accelerator(product):
     return 'unknown', False
 
 
+def _is_traffic_attention(product):
+    return (product.get('trafficAttentionStatus') == 'attention'
+            and product.get('trafficAttentionFreshness', {}).get('stale') is False)
+
+
 def health_anomalies(connect, mall_id, data=None):
     mall = _mall(mall_id)
     data = data or product_operations.state(connect, mall)
@@ -64,6 +69,10 @@ def health_anomalies(connect, mall_id, data=None):
     items = []
     for product in data['products']:
         if product.get('saleStatus') != 'on_sale':
+            continue
+        # The explicit official badge has its own queue, including after a
+        # manual clear. Unknown evidence must not hide ordinary health alerts.
+        if _is_traffic_attention(product):
             continue
         activity = product.get('activityStatus')
         boost, from_stale = resolve_accelerator(product)
@@ -91,16 +100,53 @@ def health_anomalies(connect, mall_id, data=None):
     return items
 
 
-def traffic_attention(connect, mall_id):
-    _mall(mall_id)
-    return {'items': [], 'available': False, 'gap': '商品列表「流量待关注」红标尚未入库'}
+def traffic_attention(connect, mall_id, data=None):
+    mall = _mall(mall_id)
+    data = data if data is not None else product_operations.state(connect, mall)
+    products = [p for p in data['products'] if p.get('saleStatus') == 'on_sale']
+    with connect() as db:
+        cleared = {row[0] for row in db.execute(
+            'SELECT alert_key FROM patrol_alert_clears WHERE mall_id=? AND kind=?', (mall, 'traffic_attention'))}
+    items = []
+    known = sum(p.get('trafficAttentionStatus') in {'attention', 'clear'}
+                and p.get('trafficAttentionFreshness', {}).get('stale') is False for p in products)
+    attention_count = sum(_is_traffic_attention(p) for p in products)
+    observed = sum(bool(p.get('trafficAttentionSource')) for p in products)
+    stale = sum(bool(p.get('trafficAttentionSource'))
+                and p.get('trafficAttentionFreshness', {}).get('stale') is True for p in products)
+    for product in products:
+        if not _is_traffic_attention(product):
+            continue
+        key = 'traffic_attention:' + hashlib.sha256(json.dumps(
+            [product['spuId'], 'temu_native_flow_limit_v1', 2], ensure_ascii=False).encode()).hexdigest()
+        images = [url for url in (product.get('images') or []) if isinstance(url, str) and url.startswith('https://')]
+        boost, from_stale = resolve_accelerator(product)
+        items.append({k: product.get(k) for k in ('spuId', 'tags', 'activityStatus', 'acceleratorStatus', 'saleStatus')} | {
+            'alertKey': key, 'kind': 'traffic_attention', 'reasons': ['商品流量待关注'],
+            'cleared': key in cleared, 'imageUrl': images[0] if images else '', 'images': images[:3],
+            'activityNames': product.get('activityNames') or [], 'acceleratorResolved': boost,
+            'acceleratorFromStale': from_stale,
+            'acceleratorStatusLabel': product_operations.BOOST_LABELS.get(boost, '待确认'),
+            'activityStatusLabel': product.get('activityStatusLabel') or '',
+            'saleStatusLabel': product.get('saleStatusLabel') or '',
+            'trafficAttentionFreshness': product.get('trafficAttentionFreshness'),
+            'trafficAttentionSource': product.get('trafficAttentionSource'),
+            'flowLimitStatus': product.get('trafficAttentionRawStatus')})
+    unknown = len(products) - known
+    gap = (f'还有 {unknown} 件在售商品的官方流量标记待确认，请更新加速器状态以补采'
+           if unknown else '')
+    return {'items': items, 'available': known > 0 or not products, 'gap': gap,
+            'unclearedCount': sum(not item['cleared'] for item in items),
+            'coverage': {'total': len(products), 'observed': observed, 'fresh': known,
+                         'attention': attention_count, 'clear': known - attention_count,
+                         'unknown': unknown, 'stale': stale}}
 
 
 def snapshot(connect, mall_id, now=None):
     mall = _mall(mall_id)
     ops = product_operations.state(connect, mall)
     health = health_anomalies(connect, mall, data=ops)
-    traffic = traffic_attention(connect, mall)
+    traffic = traffic_attention(connect, mall, data=ops)
     window = windows_for(now)
     pending = sum(not item['cleared'] for item in health)
     pending += sum(not item.get('cleared', False) for item in traffic['items']) if traffic['available'] else 0

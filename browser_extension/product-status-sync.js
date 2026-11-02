@@ -74,13 +74,19 @@ async function wbProductStatusTick(sourceTab, force=false, expectedMall="", onPr
         if (result.complete !== true) throw Error("分页未完整返回，保留上次完整状态");
         const meta = {source:"browser_extension",source_mall_id:mall,pages:result.pages,total:result.total,
           page_size:result.pageSize,complete:true,completion_reason:result.completionReason,source_url:origin+path,
-          ...(dataset === "products" ? {sale_scope:"on_sale",collected_skc_count:result.collectedSkcs} : {enrollment_scope:"all",enrollment_count:result.enrollmentCount})};
+          ...(dataset === "products" ? {sale_scope:"on_sale",collected_skc_count:result.collectedSkcs,
+            category_coverage:result.categoryCoverage || null,
+            category_diagnostics:result.categoryDiagnostics || null,
+            category_taxonomies:Array.isArray(result.categoryTaxonomies) ? result.categoryTaxonomies : []} : {enrollment_scope:"all",enrollment_count:result.enrollmentCount})};
         await wbEnqueue({method:"POST",path:dataset === "products" ? "/api/client/products/upload" : "/api/client/products/activities/upload",
           body:{mall_id:mall,source_mall_id:mall,store_name:identity.store_name || "",rows:result.rows || [],crawl_result:meta}});
         const sync = await wbFlush();
         if (sync.pending) throw Error("结果已保存在扩展，待补传 "+sync.pending+" 批："+(sync.last_error||"本地服务暂未接收"));
-        summaries.push(label+" "+result.total+" 条");
-        await report(label+"已同步（"+result.total+" 条）");
+        const coverage = dataset === "products" ? result.categoryCoverage : null;
+        const categorySummary = dataset !== "products" ? "" : coverage && Number.isInteger(coverage.classifiedSkus) && Number.isInteger(coverage.skuCount) ?
+          `；平台类目 ${coverage.classifiedSkus}/${coverage.skuCount} 个 SKU${coverage.classifiedSkus < coverage.skuCount ? "（类目待补采）" : ""}` : "；平台类目覆盖待核实";
+        summaries.push(label+" "+result.total+" 条"+categorySummary);
+        await report(label+"已同步（"+result.total+" 条）"+categorySummary);
       } catch (error) {
         failures.push(label+"："+String(error.message || error));
         await report(label+"未完成："+String(error.message || error));
@@ -149,18 +155,28 @@ async function wbAcceleratorStatusTick(sourceTab, force=false, expectedMall="", 
     for(let offset=0;offset<targets.spuIds.length;offset+=20){
       await guard();
       const productIds=targets.spuIds.slice(offset,offset+20),batchIds=new Set(productIds);
-      const result=await wbAutoCall(ownTabId,"ACCELERATORS_QUERY",{mallId:mall,marker,productIds,skcIdsBySpu:Object.fromEntries(productIds.map(id=>[id,targets.skcIdsBySpu[id]]))});
+      const result=await wbAutoCall(ownTabId,"ACCELERATORS_QUERY",{mallId:mall,marker,productIds,includeTrafficAttention:true,skcIdsBySpu:Object.fromEntries(productIds.map(id=>[id,targets.skcIdsBySpu[id]]))});
       await guard();
       if(result.success!==true || String(result.sourceMallId||"")!==mall || result.complete!==true || result.stateRule!=="flow_grow_badge_v1" || !Array.isArray(result.rows)) throw Error("原生加速器查询未完整返回同店铺标志核对结果");
+      if(result.trafficAttentionRule!=="temu_native_flow_limit_v1" || !Number.isSafeInteger(result.trafficAttentionRows) || result.trafficAttentionRows<0 || result.trafficAttentionRows>productIds.length ||
+          !Number.isSafeInteger(result.trafficAttentionKnown) || result.trafficAttentionKnown<0 || result.trafficAttentionKnown>result.trafficAttentionRows) throw Error("流量待关注查询器版本或覆盖证据不完整，请刷新商家后台后再更新");
       const returned=new Set(),rows=[];
       for(const row of result.rows){
         const id=String(row.spuId||"");
         if(!batchIds.has(id) || row.siteName!=="美国站" || returned.has(id) || !["enabled","disabled"].includes(row.status)) throw Error("加速器标志核对返回了清单外、重复、状态不明或站点不符的商品");
+        if(!["trafficAttention","flowLimitStatus","trafficAttentionSource","trafficAttentionLabel"].every(field=>Object.hasOwn(row,field)))throw Error("流量待关注查询缺少原生标记字段，本批未保存");
+        if(row.trafficAttention===null){
+          if(row.flowLimitStatus!==null || row.trafficAttentionSource!=="" || row.trafficAttentionLabel!=="")throw Error("未知流量待关注标记证据不一致");
+        }else if(typeof row.trafficAttention!=="boolean" || !Number.isInteger(row.flowLimitStatus) || ![0,1,2,3].includes(row.flowLimitStatus) || row.trafficAttention!==(row.flowLimitStatus===2) ||
+            row.trafficAttentionSource!=="temu_native_flow_limit_v1" || typeof row.trafficAttentionLabel!=="string" || !row.trafficAttentionLabel || row.trafficAttentionLabel.length>100){
+          throw Error("流量待关注原生标记和状态不一致，本批未保存");
+        }
         returned.add(id);rows.push(row);
       }
       // Only the query module can certify the complete growing set and its complement.
       // A missing output row is an incomplete result, never an implicit disabled state.
       if(returned.size!==productIds.length)throw Error("加速器标志核对缺少目标商品，本批未保存");
+      if(rows.filter(row=>typeof row.trafficAttention==="boolean").length!==result.trafficAttentionKnown)throw Error("流量待关注已确认数量与原生行证据不一致，本批未保存");
       const enabledCount=rows.filter(row=>row.status==="enabled").length;
       if(!Number.isSafeInteger(result.rawCount) || !Number.isSafeInteger(result.total) || result.total<0 || result.total>productIds.length || result.rawCount!==result.total || enabledCount!==result.total || result.pages!==1)throw Error("加速器标志集合条数或分页证据不一致，本批未保存");
       for(const row of rows)observed.set(row.spuId,row.status);
@@ -171,7 +187,9 @@ async function wbAcceleratorStatusTick(sourceTab, force=false, expectedMall="", 
         crawl_result:{source:"native_flow_catalog_query",source_mall_id:mall,complete:false,scan_id:marker,
           catalog_captured:targets.catalogCaptured,target_hash:targets.targetHash,target_count:targetIds.size,
           batch:batches,batch_target_count:productIds.length,raw_count:result.rawCount,total:result.total,pages:result.pages,detail_queries:result.detailRequests||0,diagnostics:result.diagnostics||[],
-          state_rule:result.stateRule,source_url:"https://agentseller-us.temu.com/main/flux-analysis"}
+          state_rule:result.stateRule,traffic_attention_rule:result.trafficAttentionRule||null,
+          traffic_attention_rows:result.trafficAttentionRows??null,traffic_attention_known:result.trafficAttentionKnown??null,
+          source_url:"https://agentseller-us.temu.com/main/flux-analysis"}
       }});
       const sync=await wbFlush();
       if(sync.pending)throw Error("加速器状态已保存在扩展，待补传 "+sync.pending+" 批");

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import activity_jobs
 import collector
@@ -12,8 +13,8 @@ import product_rules
 
 SALE_LABELS = {"on_sale": "在售", "not_on_sale": "不在售", "unknown": "在售状态待确认"}
 COLLECTION_INTERVAL_MINUTES = 120
-# Allow one scheduled interval plus 30 minutes for a large catalog to finish.
-FRESHNESS_WINDOW_MINUTES = COLLECTION_INTERVAL_MINUTES + 30
+# Snapshot validity is independent from the two-hour collection schedule.
+FRESHNESS_WINDOW_MINUTES = 12 * 60
 BOOST_LABELS = {"enabled": "加速中", "eligible": "待开启", "max_eligible": "Max 待开启",
                 "disabled": "未开启", "unknown": "待确认"}
 BOOST_SWITCH_LABELS = {"enabled": "已开启", "disabled": "未开启", "unknown": "待确认"}
@@ -102,7 +103,7 @@ def accelerator_targets(connect, mall_id, now=None):
                 and meta.get("sale_scope", "on_sale") == "on_sale"):
             raise ValueError("缺少本店完整在售商品快照，请先更新商品＋活动")
         if freshness(scope["captured"], now)["stale"]:
-            raise ValueError("本店在售商品快照已超过150分钟，请先更新商品＋活动")
+            raise ValueError("本店在售商品快照已超过12小时，请先更新商品＋活动")
         archived = db.execute(
             "SELECT body FROM collector_payloads WHERE id=? AND observed_at=? AND source_path=?",
             (scope["batch_id"], scope["captured"], "/api/client/products/upload"),
@@ -157,6 +158,55 @@ def accelerator_switch_status(observations):
     return next(iter(states)) if len(states) == 1 else "unknown"
 
 
+TRAFFIC_ATTENTION_SOURCE = "temu_native_flow_limit_v1"
+FLOW_LIMIT_LABELS = {0: "无商品流量待关注标记", 1: "商品流量预测将下滑",
+                     2: "商品流量待关注", 3: "商品流量近期有下滑"}
+
+
+def traffic_attention_state(observations, now=None):
+    """Read the independent official badge, never infer it from boost or metrics.
+
+    Only the latest US badge observation can resolve this particular badge.
+    A newer explicit unknown invalidates older evidence; legacy boost-only rows
+    without any badge fields do not count as new badge observations.
+    """
+    fields = ("trafficAttention", "flowLimitStatus", "trafficAttentionSource", "trafficAttentionLabel")
+    rows = [row for row in observations if row.get("siteName") == "美国站"
+            and any(field in row for field in fields)]
+    result = {"status": "unknown", "source": "", "rawStatus": None, "label": "",
+              "freshness": freshness("", now), "reason": "尚未采集官方商品流量待关注标记"}
+    if not rows:
+        return result
+    times = [_time(row.get("_captured")) for row in rows]
+    if any(value is None for value in times):
+        return {**result, "reason": "流量标记采集时间无效，需重新确认"}
+    latest = max(times)
+    rows = [row for row, stamp in zip(rows, times) if stamp == latest]
+    result.update(source=TRAFFIC_ATTENTION_SOURCE if any(
+        row.get("trafficAttentionSource") == TRAFFIC_ATTENTION_SOURCE for row in rows) else "",
+        freshness=freshness(latest.isoformat(), now))
+    if result["freshness"]["stale"]:
+        return {**result, "reason": "官方流量标记快照已超过12小时，需更新确认"}
+    states, raw_states = set(), set()
+    for row in rows:
+        page = urlparse(str(row.get("sourceUrl") or ""))
+        raw, flag = row.get("flowLimitStatus"), row.get("trafficAttention")
+        if (row.get("trafficAttentionSource") != TRAFFIC_ATTENTION_SOURCE
+                or page.scheme != "https" or page.netloc != "agentseller-us.temu.com"
+                or page.path != "/main/flux-analysis" or type(raw) is not int
+                or raw not in FLOW_LIMIT_LABELS or type(flag) is not bool or flag != (raw == 2)):
+            return {**result, "reason": "最新官方流量标记未明确返回，需更新确认"}
+        states.add(flag)
+        raw_states.add(raw)
+    if len(states) != 1:
+        return {**result, "reason": "同次官方流量标记证据冲突，需更新确认"}
+    flag = next(iter(states))
+    raw = next(iter(raw_states)) if len(raw_states) == 1 else None
+    return {**result, "status": "attention" if flag else "clear", "rawStatus": raw,
+            "label": FLOW_LIMIT_LABELS.get(raw, "无商品流量待关注标记"),
+            "reason": "官方商品流量待关注标记" if flag else "官方列表明确无此特定标记"}
+
+
 def _specification(row, evidence_specs):
     direct = activity_jobs.normalize_variant(row.get("specification") or row.get("properties"))
     if direct:
@@ -177,7 +227,8 @@ def state(connect, mall_id):
         category_config = product_rules.load(db, mall)
         product_scope = snapshot_scope(db, "products", mall)
         activity_scope = snapshot_scope(db, "activities", mall)
-        current = _rows(db, "products", mall)
+        current = [product_rules.enrich_platform_category(row, product_scope, mall)
+                   for row in _rows(db, "products", mall)]
         activities = _rows(db, "activities", mall)
         boosts = _rows(db, "accelerators", mall)
         known = {str(json.loads(row["payload"]).get("spuId") or "") for row in db.execute(
@@ -236,6 +287,10 @@ def state(connect, mall_id):
             specification, spec_source = maintained_specification, "local_maintenance"
         item["skus"].append({
             "skuId": key[2], "skcId": key[1], "skuCode": row.get("skuCode") or "",
+            **{field: row.get(field, [] if field in {"categoryPath", "categoryIds"} else "")
+               for field in ("categoryId", "categoryName", "categoryPath", "categoryIds", "categorySource")},
+            "categoryPathSource": row.get("categoryPathSource", ""),
+            "categoryPathEvidence": row.get("categoryPathEvidence", {}),
             "specification": specification, "specificationSource": spec_source,
             "observedSpecification": observed_specification, "maintainedSpecification": maintained_specification,
             "declaredPrice": row.get("declaredPrice"), "currency": row.get("currency") or "CNY",
@@ -265,41 +320,76 @@ def state(connect, mall_id):
         current_activities = [a for a in linked if a["status"] in {"active", "scheduled", "exit_review"}]
         item["activityNames"] = sorted({a.get("activityName") or a.get("activityTypeName") or a["enrollId"] for a in current_activities})
         item["activityFreshness"] = freshness(activity_scope["captured"] if activity_scope else "", now)
-        item["activityStatus"] = "enrolled" if current_activities else "none" if activity_scope and not item["activityFreshness"]["stale"] else "unknown"
+        activity_meta = activity_scope["meta"] if activity_scope else {}
+        activity_complete = bool(activity_scope and activity_meta.get("complete") is True
+                                 and activity_meta.get("source") == "browser_extension"
+                                 and str(activity_meta.get("source_mall_id") or "") == mall
+                                 and activity_meta.get("enrollment_scope", "all") == "all")
+        item["activityCoverage"] = {"complete": activity_complete,
+                                    "fresh": not item["activityFreshness"]["stale"],
+                                    "scope": activity_meta.get("enrollment_scope", "all") if activity_scope else "",
+                                    "sourceTotal": activity_scope["source_total"] if activity_scope else None}
+        item["activityStatus"] = ("enrolled" if current_activities else
+                                  "none" if activity_complete and not item["activityFreshness"]["stale"]
+                                  and not any(a["status"] == "unknown" for a in linked) else "unknown")
         if item["activityStatus"] == "enrolled":
             item["activityStatusLabel"] = "已报名（快照较旧）" if item["activityFreshness"]["stale"] else "已报名"
         else:
-            item["activityStatusLabel"] = ("活动记录待更新" if item["activityFreshness"]["stale"] else "当前无生效活动") if activity_scope else "活动待确认"
+            item["activityStatusLabel"] = ("当前无生效活动" if item["activityStatus"] == "none" else
+                                           "活动记录待更新" if item["activityFreshness"]["stale"] else
+                                           "活动状态待确认" if activity_complete else "活动记录未确认全量")
         item["accelerators"] = by_spu_boost.get(item["spuId"], [])
         statuses = {b.get("status") for b in item["accelerators"] if not b["freshness"]["stale"]}
         item["acceleratorStatus"] = next(iter(statuses)) if len(statuses) == 1 else "unknown"
         item["acceleratorStatusLabel"] = BOOST_LABELS.get(item["acceleratorStatus"], "待确认")
         item["acceleratorSwitchStatus"] = accelerator_switch_status(item["accelerators"])
         item["acceleratorSwitchStatusLabel"] = BOOST_SWITCH_LABELS[item["acceleratorSwitchStatus"]]
+        attention = traffic_attention_state(item["accelerators"], now)
+        item["trafficAttentionStatus"] = attention["status"]
+        item["trafficAttentionFreshness"] = attention["freshness"]
+        item["trafficAttentionSource"] = attention["source"]
+        item["trafficAttentionRawStatus"] = attention["rawStatus"]
+        item["trafficAttentionLabel"] = attention["label"]
+        item["trafficAttentionReason"] = attention["reason"]
         item["tags"] = [item["saleStatusLabel"], item["activityStatusLabel"], "加速器：" + item["acceleratorStatusLabel"]]
+        if attention["status"] == "attention":
+            item["tags"].append("商品流量待关注")
         item["freshness"] = freshness(product_scope["captured"] if product_scope else max((s["freshness"]["captured"] for s in item["skus"]), default=""), now)
         item["skuCount"] = len(item["skus"])
         active.append(item)
     active.sort(key=lambda item: item["spuId"])
     trash.sort(key=lambda item: item["spuId"])
     pending.sort(key=lambda item: item["spuId"])
+    official_count = sum(bool(p["platformCategoryId"] or p["platformCategoryName"])
+                         and not p["platformCategoryConflict"] for p in active)
+    official_conflicts = sum(p["platformCategoryConflict"] for p in active)
+    official_missing = len(active) - official_count - official_conflicts
     return {
         "success": True, "mallId": mall, "generatedAt": now.isoformat(),
         "products": active, "trash": trash, "pending": pending, "categoryConfig": category_config,
+        "categoryCoverage": {"matched": official_count, "missing": official_missing,
+                             "conflicts": official_conflicts, "total": len(active)},
         "counts": {"onSale": len(active), "notOnSale": len(trash), "unknown": len(pending),
+                   "platformCategorized": official_count, "platformCategoryMissing": official_missing,
+                   "platformCategoryConflicts": official_conflicts,
                    "skus": sum(p["skuCount"] for p in active),
                    "enrolled": sum(p["activityStatus"] == "enrolled" for p in active),
                    "accelerating": sum(p["acceleratorStatus"] == "enabled" for p in active),
                    "acceleratorUnknown": sum(p["acceleratorStatus"] == "unknown" for p in active),
                    "acceleratorSwitchEnabled": sum(p["acceleratorSwitchStatus"] == "enabled" for p in active),
                    "acceleratorSwitchDisabled": sum(p["acceleratorSwitchStatus"] == "disabled" for p in active),
-                   "acceleratorSwitchUnknown": sum(p["acceleratorSwitchStatus"] == "unknown" for p in active)},
+                   "acceleratorSwitchUnknown": sum(p["acceleratorSwitchStatus"] == "unknown" for p in active),
+                   "trafficAttention": sum(p["trafficAttentionStatus"] == "attention" for p in active),
+                   "trafficAttentionUnknown": sum(p["trafficAttentionStatus"] == "unknown" for p in active)},
         "sources": {"products": freshness(product_scope["captured"] if product_scope else "", now),
                     "activities": freshness(activity_scope["captured"] if activity_scope else "", now),
                     "accelerators": {**freshness(max((b["_captured"] for b in boosts), default=""), now),
                                      "observedProducts": sum(bool(p["accelerators"]) for p in active),
                                      "freshProducts": sum(p["acceleratorStatus"] != "unknown" for p in active),
-                                     "switchFreshProducts": sum(p["acceleratorSwitchStatus"] != "unknown" for p in active)}},
+                                     "switchFreshProducts": sum(p["acceleratorSwitchStatus"] != "unknown" for p in active)},
+                    "trafficAttention": {**freshness(max((p["trafficAttentionFreshness"]["captured"] for p in active), default=""), now),
+                                         "observedProducts": sum(bool(p["trafficAttentionSource"]) for p in active),
+                                         "freshProducts": sum(p["trafficAttentionStatus"] != "unknown" for p in active)}},
         "refreshIntervalSeconds": 15, "collectionIntervalMinutes": COLLECTION_INTERVAL_MINUTES,
         "freshnessWindowMinutes": FRESHNESS_WINDOW_MINUTES,
         "todo": "逐商品流量诊断与长期跟踪：后续共同确定指标、采样频率和保存周期。",

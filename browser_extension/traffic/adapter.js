@@ -367,19 +367,42 @@
     return {current,total,pageSize,next:next[0],last:disabled(next[0]) || !!next[0].querySelector('button:disabled,[aria-disabled="true"]'),expected,single:total !== null && pageSize > 0 && total <= pageSize};
   }
   function firstPage() { if(pageInfo().current!==1)click(control(pagination(), ['1'])); }
+  let updaterPausedByAssistant = false;
+  async function updaterState(message, stage) {
+    if (typeof root.chrome?.runtime?.sendMessage !== 'function') throw new Error(stage+'：插件连接不可用，请重新加载助手并刷新页面');
+    let timer;
+    const state = await Promise.race([
+      Promise.resolve().then(() => root.chrome.runtime.sendMessage(message)),
+      new Promise((_,reject) => { timer = setTimeout(() => reject(new Error(stage+'：自动更新状态确认超时，已停止准备')),5000); }),
+    ]).catch(error => { throw new Error(stage+'：无法确认自动更新状态（'+String(error?.message || error)+'）'); }).finally(() => clearTimeout(timer));
+    if (!state || typeof state.enabled !== 'boolean') throw new Error(stage+'：自动更新状态未明确返回 enabled，已停止准备');
+    return state;
+  }
   async function pauseUpdater() {
+    updaterPausedByAssistant = false;
     const bar=document.getElementById('wbDailyBar');
-    const button=bar&&[...bar.querySelectorAll('button')].find(el=>text(el).trim()==='暂停自动更新');
-    if(!button)return false;
-    if(/正在采集|采集中|正在更新/.test([...bar.children].filter(el=>el.tagName==='DIV').map(text).join(' ')))throw new Error('原工作台正在采集，请等它完成后再扫描，避免同时翻页');
-    click(button);await new Promise(resolve=>setTimeout(resolve,700));
-    if(![...bar.querySelectorAll('button')].some(el=>text(el).trim()==='开启自动更新'))throw new Error('未能暂停原工作台的并发自动更新');
+    if(bar&&/正在采集|采集中|正在更新/.test([...bar.children].filter(el=>el.tagName==='DIV').map(text).join(' ')))throw new Error('原工作台正在采集，请等它完成后再扫描，避免同时翻页');
+    const before = await updaterState({type:'WORKBENCH_AUTO_STATUS'},'读取自动更新状态');
+    if (!before.enabled) return false;
+    // This is our scheduler, not a platform control. The optional daily bar is
+    // normally hidden by the panel manager, so never use its DOM button as API.
+    const paused = await updaterState({type:'WORKBENCH_AUTO_ENABLE',enabled:false},'暂停自动更新');
+    if (paused.enabled) throw new Error('暂停自动更新未生效，已停止准备');
+    const confirmed = await updaterState({type:'WORKBENCH_AUTO_STATUS'},'确认自动更新已暂停');
+    if (confirmed.enabled) throw new Error('自动更新暂停状态发生变化，已停止准备');
+    updaterPausedByAssistant = true;
     return true;
   }
   async function restoreUpdater() {
-    const bar=document.getElementById('wbDailyBar');
-    const button=bar&&[...bar.querySelectorAll('button')].find(el=>text(el).trim()==='开启自动更新');
-    if(button){click(button);await new Promise(resolve=>setTimeout(resolve,300))}
+    if (!updaterPausedByAssistant) return;
+    const before = await updaterState({type:'WORKBENCH_AUTO_STATUS'},'读取自动更新恢复状态');
+    if (!before.enabled) {
+      const restored = await updaterState({type:'WORKBENCH_AUTO_ENABLE',enabled:true},'恢复自动更新');
+      if (!restored.enabled) throw new Error('恢复自动更新未生效，请手动核对；不会自动重采');
+      const confirmed = await updaterState({type:'WORKBENCH_AUTO_STATUS'},'确认自动更新已恢复');
+      if (!confirmed.enabled) throw new Error('自动更新恢复状态发生变化，请手动核对；不会自动重采');
+    }
+    updaterPausedByAssistant = false;
   }
   function scrollArea() {
     const p = products()[0]?.element;
@@ -455,7 +478,7 @@
     try { const info = pageInfo(); pageStats = {current:info.current, total:info.total, pageSize:info.pageSize, expected:info.expected}; } catch {}
     let stagedText = null;
     try { const current = drawer(); if (current) stagedText = [...current.querySelectorAll('[class*="flux-shift-table_skuItem__"]')].map(row => ({displayed:text(row).trim(), raw:(row.textContent || '').slice(0,1500)})); } catch {}
-    return {version: '1.0.6', page: location.origin + location.pathname, time: new Date().toISOString(), pageStats, stagedText,
+    return {version: '1.0.7', page: location.origin + location.pathname, time: new Date().toISOString(), pageStats, stagedText,
       products: rows.map(p => ({id: p.id, goodsId:p.goodsId, key:p.key, category: p.category, tags: p.tags, opportunity: p.opportunity, html: clean(p.element)})), pagination: pager, dialog: modal ? clean(modal) : null};
   }
   root.TrafficDOM = {visible, disabled, text, exact, control, click, allowedPage, refreshIdentities, products, drawer, priceDialog, confirmation, verifyIdentity, select14, is14Selected, getMore, readPriceRows, setValue, verifyValues, verifyStagedPrices, outcomeTracker, notices, pageInfo, firstPage, pauseUpdater, restoreUpdater, scrollArea, revealRows, fingerprint, loading, serverProblem, drawerCloseControl, closeDrawer, diagnostics};

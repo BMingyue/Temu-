@@ -28,19 +28,35 @@
     }
     throw Error('Temu 页面仍在加载，请完成登录后重试');
   }
-  async function openPanel(sender) {
+  async function verifyPanelShop(tab, expectedMallId) {
+    if (!expectedMallId) return;
+    if (typeof wbSellerIdentity !== 'function' || typeof wbAutoCall !== 'function') throw Error('店铺核对尚未就绪，请稍后重新检测插件');
+    const identity = await wbSellerIdentity(tab);
+    if (String(identity.current_mall_id || '') !== expectedMallId) throw Error('美国站当前店铺与工作台选择不一致，请先切换到工作台所选店铺');
+    const checked = await wbAutoCall(tab.id,'VERIFY_SELLER_SHOP',{mallId:expectedMallId,name:identity.store_name || ''});
+    if (!checked.matches) throw Error('美国站页面店铺尚未确认，请刷新对应商家页面后重试');
+    const current = await chrome.tabs.get(tab.id);
+    if (!allowed(current.url)) throw Error('美国站页面已变化，请重新打开流量分析页');
+  }
+  async function openPanel(sender, expectedMallId) {
     const tabs = (await chrome.tabs.query({url:'https://agentseller-us.temu.com/main/flux-analysis*'})).filter(tab => allowed(tab.url));
     const [active] = await chrome.tabs.query({active:true,currentWindow:true});
     let tab = tabs.find(item => item.id === sender.tab?.id) || tabs.find(item => item.id === active?.id);
     if (!tab && tabs.length > 1) throw Error('已打开多个美国站流量页，请先切到要操作的店铺页面，再点击插件中的流量加速器');
-    if (!tab) tab = tabs[0] || await chrome.tabs.create({url:TARGET,active:true});
-    await chrome.tabs.update(tab.id,{active:true});
+    if (!tab) tab = tabs[0];
+    if (!tab && expectedMallId) {
+      const cookie = await chrome.cookies.get({url:'https://agentseller-us.temu.com/',name:'mallid'});
+      if (String(cookie?.value || '') !== expectedMallId) throw Error('美国站当前店铺与工作台选择不一致，请先打开并登录所选店铺');
+    }
+    if (!tab) tab = await chrome.tabs.create({url:TARGET,active:true});
     await waitLoaded(tab.id);
+    await verifyPanelShop(tab,expectedMallId);
+    await chrome.tabs.update(tab.id,{active:true});
     const saved = (await chrome.storage.local.get(VISIBILITY))[VISIBILITY] || {};
     await chrome.storage.local.set({[VISIBILITY]:{...saved,traffic:true}});
     await chrome.scripting.executeScript({target:{tabId:tab.id},world:'MAIN',files:['traffic/identity-reader.js']});
     await chrome.scripting.executeScript({target:{tabId:tab.id},files:['traffic/rules.js','traffic/adapter.js','traffic/scan-only.js','traffic/records-transfer.js','traffic/runner.js']});
-    return {ok:true,tabId:tab.id,panelOnly:true};
+    return {ok:true,tabId:tab.id,panelOnly:true,...(expectedMallId ? {mallId:expectedMallId} : {})};
   }
   chrome.runtime.onMessage.addListener((message,sender,respond) => {
     if (sender.id !== chrome.runtime.id) return false;
@@ -69,8 +85,19 @@
     }
     if (message?.type === 'WORKBENCH_PING') { respond({ok:true,version:chrome.runtime.getManifest().version,capabilities:['traffic-accelerator']}); return false; }
     if (message?.type === 'WORKBENCH_OPEN_TRAFFIC_ACCELERATOR') {
-      if (!opening) opening = openPanel(sender).finally(() => { opening = null; });
-      opening.then(respond,error => respond({ok:false,error:String(error.message || error)})); return true;
+      const fromWorkbench = (() => { try { return new URL(source).origin === 'http://127.0.0.1:5173'; } catch { return false; } })();
+      const expectedMallId = typeof message.expectedMallId === 'string' ? message.expectedMallId : '';
+      if ((fromWorkbench || message.expectedMallId != null) && !/^[1-9]\d{0,39}$/.test(expectedMallId)) {
+        respond({ok:false,error:'请先在工作台选择当前店铺，再打开流量加速器面板'});return false;
+      }
+      if (opening && opening.mallId !== expectedMallId) {
+        respond({ok:false,error:'另一个店铺的面板正在打开，请稍后重试'});return false;
+      }
+      if (!opening) {
+        const pending = openPanel(sender,expectedMallId).finally(() => { if (opening?.promise === pending) opening = null; });
+        opening = {mallId:expectedMallId,promise:pending};
+      }
+      opening.promise.then(respond,error => respond({ok:false,error:String(error.message || error)})); return true;
     }
     if (!['acquire','release','heartbeat'].includes(message?.trafficLock) || !sender.tab || !allowed(sender.tab.url) || typeof message.runId !== 'string' || !/^[a-zA-Z0-9-]{8,80}$/.test(message.runId)) return false;
     // Reserve before awaiting storage so an automatic collector cannot win the same turn.

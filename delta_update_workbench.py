@@ -34,6 +34,7 @@ ROOT_FILES = {
  'git-update.json','workbench-components.json','一键更新.cmd','一键更新.vbs',
 }
 ROOT_DIRS = {'runtime','web-dist','browser_extension','gpt_chrome_extension','source','local_tools','image_presets'}
+ROOT_FILES.update({'从GitHub安装更新.cmd','maintenance/github_workbench_update.ps1'})
 COMMIT_FILES = ('版本信息.json','SHA256SUMS.txt','workbench-release.json')
 ACTIVE_JOB_PHASES = {'queued','claimed','sending','sent','waiting','downloading','running'}
 

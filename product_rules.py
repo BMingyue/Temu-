@@ -60,16 +60,20 @@ def validate_rules(rules):
             raise ValueError("类目名称不能为空、重复或使用未分类")
         seen.add(name)
         fields = {}
-        for key in ("specifications", "codeKeywords"):
+        for key in ("specifications", "codeKeywords", "platformCategoryIds", "platformCategoryNames"):
             values = rule.get(key, [])
             if not isinstance(values, list) or len(values) > 100:
                 raise ValueError("每个类目最多填写 100 个规格或货号关键词")
-            normalized = [text(v) for v in values]
+            normalized = [text(v, 500 if key == "platformCategoryNames" else 100) for v in values]
             if key == "specifications":
                 normalized = [activity_jobs.normalize_variant(v) for v in normalized]
+            if key == "platformCategoryIds" and any(v and not re.fullmatch(r"\d{1,40}", v) for v in normalized):
+                raise ValueError("平台类目 ID 需要为数字标识")
+            if key == "platformCategoryNames":
+                normalized = [" > ".join(part.strip() for part in re.split(r"[>＞]", value)) for value in normalized]
             fields[key] = list(dict.fromkeys(v for v in normalized if v))
-        if not fields["specifications"] and not fields["codeKeywords"]:
-            raise ValueError("每个类目至少填写一种规格或货号关键词")
+        if not any(fields.values()):
+            raise ValueError("每个类目至少填写一种平台类目、规格或货号规则")
         minimum = rule.get("minMatches", 1)
         tolerance = rule.get("tolerance", 2)
         if isinstance(minimum, bool) or not isinstance(minimum, int) or not 1 <= minimum <= 100:
@@ -96,7 +100,154 @@ def matches(spec, expected, tolerance):
     return bool(spec and str(spec).strip().casefold() == str(expected).strip().casefold())
 
 
+def enrich_platform_category(row, scope, mall):
+    """Copy a row with a verified taxonomy path from its exact complete batch."""
+    meta = scope.get("meta", {}) if isinstance(scope, dict) else {}
+    if not (scope and isinstance(meta, dict) and meta.get("complete") is True
+            and meta.get("source") == "browser_extension"
+            and str(scope.get("mall_id") or "") == str(mall)
+            and str(meta.get("source_mall_id") or "") == str(mall)
+            and scope.get("captured") and row.get("_captured") == scope["captured"]):
+        return row
+    if row.get("categorySource") == "temu_product_catalog_conflict":
+        return row
+    if len(row.get("categoryPath") or []) > 1 or len(row.get("categoryIds") or []) > 1:
+        return row
+
+    def identity(value):
+        return str(value) if type(value) in (str, int) and re.fullmatch(r"[1-9]\d{0,39}", str(value)) else ""
+
+    def name(value):
+        return value.strip() if isinstance(value, str) and len(value.strip()) <= 200 and not any(ord(c) < 32 for c in value) else ""
+
+    leaf_id, leaf_name = identity(row.get("categoryId")), name(row.get("categoryName"))
+    if ((row.get("categoryIds") and str(row["categoryIds"][-1]) != leaf_id)
+            or (row.get("categoryPath") and row["categoryPath"][-1] != leaf_name)):
+        return row
+    taxonomies = meta.get("category_taxonomies")
+    if not leaf_id or not leaf_name or not isinstance(taxonomies, list) or len(taxonomies) > 100:
+        return row
+    candidates = set()
+    invalid = False
+    for taxonomy in taxonomies:
+        if not isinstance(taxonomy, dict):
+            continue
+        leaf, categories = taxonomy.get("leafCat"), taxonomy.get("categories")
+        if not isinstance(leaf, dict) or identity(leaf.get("catId")) != leaf_id:
+            continue
+        if name(leaf.get("catName")) != leaf_name or not isinstance(categories, dict):
+            invalid = True
+            continue
+        nodes, unusable = [], False
+        for level in range(1, 11):
+            raw = categories.get(f"cat{level}")
+            if raw is None:
+                nodes.append({"id": "", "name": "", "trailingPlaceholder": True})
+                continue
+            if not isinstance(raw, dict):
+                unusable = True
+                break
+            placeholder = (type(raw.get("catId")) in (str, int) and str(raw.get("catId")) == "0"
+                           and isinstance(raw.get("catName"), str) and not raw["catName"].strip())
+            nodes.append({"id": identity(raw.get("catId")), "name": name(raw.get("catName")),
+                          "trailingPlaceholder": placeholder})
+        while nodes and nodes[-1]["trailingPlaceholder"]:
+            nodes.pop()
+        if unusable or not nodes or nodes[-1]["id"] != leaf_id or nodes[-1]["name"] != leaf_name:
+            invalid = True
+            continue
+        def suffix(field):
+            result = []
+            for node in reversed(nodes):
+                if not node[field]:
+                    break
+                result.insert(0, node[field])
+            return tuple(result)
+        candidates.add((suffix("name"), suffix("id")))
+    if invalid or len(candidates) != 1:
+        return row
+    path, ids = next(iter(candidates))
+    if len(path) <= 1 and len(ids) <= 1:
+        return row
+    return {**row, "categoryPath": list(path), "categoryIds": list(ids),
+            "categoryPathSource": "same_snapshot_taxonomy",
+            "categoryPathEvidence": {"source": "crawl_result.category_taxonomies",
+                                     "catalogCaptured": scope["captured"], "categoryId": leaf_id}}
+
+
+def platform_category(skus):
+    """Read per-product taxonomy evidence, never SKU packaging/size labels."""
+    observations = []
+    conflict = False
+    for sku in skus:
+        if sku.get("categorySource") == "temu_product_catalog_conflict":
+            conflict = True
+        path = [str(v).strip() for v in sku.get("categoryPath", []) if str(v).strip()]
+        ids = [str(v).strip() for v in sku.get("categoryIds", []) if str(v).strip()]
+        # Scalars are the normalizer's explicit leaf evidence. A partial path
+        # may stop at an ancestor, so it cannot supply a missing leaf scalar.
+        identity = str(sku.get("categoryId") or "").strip()
+        name = str(sku.get("categoryName") or "").strip()
+        if (ids and not identity) or (path and not name):
+            conflict = True
+        if not (identity or name):
+            continue
+        if (ids and identity != ids[-1]) or (path and name != path[-1]):
+            conflict = True
+        observations.append({"id": identity, "name": name, "path": path or ([name] if name else []), "ids": ids,
+                             "pathSource": sku.get("categoryPathSource") or "product_catalog",
+                             "pathEvidence": sku.get("categoryPathEvidence") or {}})
+    identities = {v["id"] for v in observations if v["id"]}
+    names = {v["name"] for v in observations if v["name"]}
+    conflict = conflict or len(identities) > 1 or len(names) > 1
+    richest = {key: max((value[key] for value in observations), key=len, default=[]) for key in ("path", "ids")}
+    for value in observations:
+        # A leaf-only observation may supplement a complete path. Different
+        # ancestors with the same leaf are conflicting taxonomy evidence.
+        for key in ("path", "ids"):
+            left, right = value[key], richest[key]
+            if left and right and left != right[-len(left):]:
+                conflict = True
+    path_observation = next((value for value in observations if value["path"] == richest["path"]), {})
+    return {"platformCategoryId": next(iter(identities), "") if len(identities) <= 1 else "",
+            "platformCategoryName": next(iter(names), "") if len(names) <= 1 else "",
+            "platformCategoryPath": richest["path"] if not conflict else [],
+            "platformCategoryIds": richest["ids"] if not conflict else [],
+            "platformCategoryPathSource": path_observation.get("pathSource", "") if not conflict else "",
+            "platformCategoryPathEvidence": path_observation.get("pathEvidence", {}) if not conflict else {},
+            "platformCategoryConflict": conflict,
+            "platformCategoryObservations": observations if conflict else []}
+
+
 def classify(skus, config):
+    official = platform_category(skus)
+    if official["platformCategoryConflict"]:
+        return {**official, "categoryName": "未分类", "categorySource": "platform_conflict",
+                "categorySourceLabel": "平台类目证据冲突"}
+    identity, name = official["platformCategoryId"], official["platformCategoryName"]
+    if identity or name:
+        ids = official["platformCategoryIds"] or ([identity] if identity else [])
+        path = official["platformCategoryPath"] or ([name] if name else [])
+        candidates = {}
+        for rule in config["rules"]:
+            mapped_names = [" > ".join(part.strip() for part in re.split(r"[>＞]", value))
+                            for value in rule.get("platformCategoryNames", [])]
+            depth_count = max(len(path), len(ids))
+            depths = [depth_count - len(ids) + index for index, value in enumerate(ids)
+                      if value in rule.get("platformCategoryIds", [])]
+            depths += [depth_count - len(path) + index for index, value in enumerate(path) if value in mapped_names]
+            if path and " > ".join(path) in mapped_names:
+                depths.append(depth_count - 1)
+            if depths:
+                candidates[rule["name"]] = max(depths)
+        best = max(candidates.values(), default=-1)
+        matched = [value for value, depth in candidates.items() if depth == best]
+        if len(matched) > 1:
+            return {**official, "categoryName": "未分类", "categorySource": "conflict",
+                    "categorySourceLabel": "平台类目映射规则冲突"}
+        return {**official, "categoryName": matched[0] if matched else name or "未分类",
+                "categorySource": "platform_category_rule" if matched else "platform_category",
+                "categorySourceLabel": "平台类目映射" if matched else "平台商品类目"}
     codes = [str(s.get("skuCode") or "").casefold() for s in skus]
     specs = {s["specification"] for s in skus if s.get("specification")}
     candidates = {}
@@ -116,9 +267,9 @@ def classify(skus, config):
             candidates[rule["name"]] = "sku_code" if code_match else "spec_preset"
     if len(candidates) == 1:
         name, source = next(iter(candidates.items()))
-        return {"categoryName": name, "categorySource": source,
+        return {**official, "categoryName": name, "categorySource": source,
                 "categorySourceLabel": "货号规则" if source == "sku_code" else "规格规则"}
-    return {"categoryName": "未分类", "categorySource": "conflict" if candidates else "missing",
+    return {**official, "categoryName": "未分类", "categorySource": "conflict" if candidates else "missing",
             "categorySourceLabel": "多个类目规则冲突" if candidates else "类目或规格信息不足"}
 
 

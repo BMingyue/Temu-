@@ -8,6 +8,14 @@ type Row=Record<string,any>;
 const stamp=(value:any)=>value?new Date(value).toLocaleString('zh-CN'):'尚未采集';
 const money=(value:any,currency='CNY')=>value==null||value===''?'待采集':(currency==='CNY'?'¥':currency==='USD'?'$':currency+' ')+Number(value).toFixed(2);
 const fresh=(value:Row)=>value?.stale?'快照较旧':'有效期内快照';
+const platformPath=(row:Row):string[]=>Array.isArray(row.platformCategoryPath)?row.platformCategoryPath.map(String).filter(Boolean):[];
+const platformLabel=(row:Row)=>platformPath(row).join(' > ')||row.platformCategoryName||(row.platformCategoryId?'类目 ID '+row.platformCategoryId:'');
+function platformNodes(row:Row){
+ if(row.platformCategoryConflict)return [{key:'conflict',label:'平台类目冲突，待核对'}];
+ const names=platformPath(row),ids=Array.isArray(row.platformCategoryIds)?row.platformCategoryIds.map(String):[];
+ if(!names.length)return row.platformCategoryId?[{key:'id:'+row.platformCategoryId,label:platformLabel(row)}]:row.platformCategoryName?[{key:'name:'+row.platformCategoryName,label:row.platformCategoryName}]:[{key:'missing',label:'平台类目待采集'}];
+ return names.map((_,index)=>({key:ids.length===names.length&&ids[index]?'id:'+ids[index]:index===names.length-1&&row.platformCategoryId?'id:'+row.platformCategoryId:'path:'+JSON.stringify(names.slice(0,index+1)),label:names.slice(0,index+1).join(' > ')}));
+}
 const catalogQueryReady=(version:string)=>{const parts=String(version||'').split('.').map(Number);return parts.length>=3&&parts.every(Number.isInteger)&&(parts[0]>0||parts[1]>20||parts[1]===20&&parts[2]>=11)};
 async function api(path:string,body?:Row,signal?:AbortSignal){
  const response=await fetch(path,{cache:'no-store',signal:signal||AbortSignal.timeout(20000),...(body?{method:'POST',headers:{'Content-Type':'application/json','X-Workbench':'local'},body:JSON.stringify(body)}:{})});
@@ -15,7 +23,7 @@ async function api(path:string,body?:Row,signal?:AbortSignal){
 }
 export default function ProductStatus({preferredMall='',clientId=''}:{preferredMall?:string;clientId?:string}){
  const [mall,setMall]=useState(preferredMall),[shops,setShops]=useState<Row[]>([]),[data,setData]=useState<Row|null>(null);
- const [query,setQuery]=useState(''),[pool,setPool]=useState('on_sale'),[category,setCategory]=useState(''),[activity,setActivity]=useState('all'),[boost,setBoost]=useState('all');
+ const [query,setQuery]=useState(''),[pool,setPool]=useState('on_sale'),[category,setCategory]=useState(''),[platformCategory,setPlatformCategory]=useState(''),[activity,setActivity]=useState('all'),[boost,setBoost]=useState('all');
  const [error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[page,setPage]=useState(1);
  const [control,setControl]=useState<Row|null>(null),[reload,setReload]=useState(0);
  const [editingRules,setEditingRules]=useState(false),[editingProduct,setEditingProduct]=useState<Row|null>(null);
@@ -39,22 +47,29 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
   return()=>{controller.abort();clearInterval(timer);window.removeEventListener('focus',load)};
  },[mall,reload]);
  useEffect(()=>{setMessage('');setEditingRules(false);setEditingProduct(null)},[mall]);
- useEffect(()=>{setCategory('');setBatchCategory('')},[mall,pool]);
- useEffect(()=>setPage(1),[mall,pool,category,query,activity,boost]);
+ useEffect(()=>{setCategory('');setPlatformCategory('');setBatchCategory('')},[mall,pool]);
+ useEffect(()=>setPage(1),[mall,pool,category,platformCategory,query,activity,boost]);
  const categories=useMemo(()=>{
   if(!data||data.mallId!==mall)return [];
   const counts=new Map<string,number>();
   for(const row of data.products||[]){const name=row.categoryName||'未分类';counts.set(name,(counts.get(name)||0)+1)}
   return [...counts].map(([name,count])=>({name,count})).sort((a,b)=>a.name==='未分类'?1:b.name==='未分类'?-1:b.count-a.count||a.name.localeCompare(b.name,'zh-CN'));
  },[data,mall]);
+ const platformCategories=useMemo(()=>{
+  if(!data||data.mallId!==mall)return [];
+  const counts=new Map<string,{key:string;label:string;count:number}>();
+  for(const row of data.products||[]){const seen=new Set<string>();for(const node of platformNodes(row)){if(seen.has(node.key))continue;seen.add(node.key);const saved=counts.get(node.key);if(saved)saved.count++;else counts.set(node.key,{...node,count:1})}}
+  return [...counts.values()].sort((a,b)=>Number(['missing','conflict'].includes(a.key))-Number(['missing','conflict'].includes(b.key))||a.label.localeCompare(b.label,'zh-CN'));
+ },[data,mall]);
  useEffect(()=>{if(data?.mallId===mall&&category&&!categories.some(item=>item.name===category))setCategory('')},[data,mall,category,categories]);
+ useEffect(()=>{if(data?.mallId===mall&&platformCategory&&!platformCategories.some(item=>item.key===platformCategory))setPlatformCategory('')},[data,mall,platformCategory,platformCategories]);
  const rows=useMemo(()=>{
   if(!data||data.mallId!==mall)return [];
   const source:Row[]=pool==='on_sale'?data.products:pool==='not_on_sale'?data.trash:data.pending;
   const term=query.trim().toLowerCase();
-  return (source||[]).filter(row=>(!term||[row.spuId,row.categoryName,...(row.skus||[]).flatMap((sku:Row)=>[sku.skuId,sku.skcId,sku.skuCode,sku.specification]),...(row.activityNames||[])].join(' ').toLowerCase().includes(term))&&(pool!=='on_sale'||(!category||(row.categoryName||'未分类')===category)&&(activity==='all'||row.activityStatus===activity)&&(boost==='all'||row.acceleratorSwitchStatus===boost)));
- },[data,mall,pool,category,query,activity,boost]);
- const batch=useBatchSelection(rows,JSON.stringify([mall,pool,category,query,activity,boost]),row=>String(row.spuId));
+  return (source||[]).filter(row=>(!term||[row.spuId,row.categoryName,platformLabel(row),row.platformCategoryId,...(row.skus||[]).flatMap((sku:Row)=>[sku.skuId,sku.skcId,sku.skuCode,sku.specification]),...(row.activityNames||[])].join(' ').toLowerCase().includes(term))&&(pool!=='on_sale'||(!category||(row.categoryName||'未分类')===category)&&(!platformCategory||platformNodes(row).some(node=>node.key===platformCategory))&&(activity==='all'||row.activityStatus===activity)&&(boost==='all'||row.acceleratorSwitchStatus===boost)));
+ },[data,mall,pool,category,platformCategory,query,activity,boost]);
+ const batch=useBatchSelection(rows,JSON.stringify([mall,pool,category,platformCategory,query,activity,boost]),row=>String(row.spuId));
  const selected=batch.selectedRows.map(row=>String(row.spuId));
  useEffect(()=>setPage(1),[batch.onlySelected]);
  const visibleRows=batch.visibleRows;
@@ -83,7 +98,7 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
    {editingProduct&&data?.mallId===mall&&data.categoryConfig&&<ProductMaintenance key={mall+'|'+editingProduct.spuId} mall={mall} config={data.categoryConfig} product={editingProduct} onSaved={()=>setReload(value=>value+1)} onClose={()=>setEditingProduct(null)}/>}
 
   <section className="panel">
-   <div className="sectionhead"><div><h2>商品状态</h2><p>按 SPU 管理在售商品，展开查看规格价格、活动和加速器。</p></div><span className="tag green">默认只看在售</span></div>
+   <div className="sectionhead"><div><h2>商品状态</h2><p>按平台类目查找在售商品，按商品编号关联活动报名，展开查看每个规格的价格与活动。</p></div><span className="tag green">默认只看在售</span></div>
    <div className="filterbar">
     <select aria-label="商品状态店铺" value={mall} onChange={event=>setMall(event.target.value)}>
      <option value="">选择店铺</option>
@@ -103,29 +118,31 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
    {typeof client?.auto_state?.enabled==='boolean'&&<p className={'banner '+(client.auto_state.product_error?'danger':'')} aria-label="自动采集状态">自动更新{client.auto_state.enabled?'已开启':'已暂停'} · {client.auto_state.product_error||'手动刷新优先；商家后台在线时每 2 小时更新商品与报名记录'}{client.auto_state.product_finished_at?' · 最近完整同步：'+stamp(client.auto_state.product_finished_at):''}{client.auto_state.product_error&&client.auto_state.product_retry_at?' · 下次尝试：'+stamp(client.auto_state.product_retry_at):''}</p>}
     {typeof client?.auto_state?.enabled==='boolean'&&<p className={'banner '+(client.auto_state.accelerator_error?'danger':'')} aria-label="加速器采集状态">加速器：{client.auto_state.accelerator_error||'可随时手动刷新；自动更新开启时每 2 小时从美国站读取'}{client.auto_state.accelerator_finished_at?' · 最近完成：'+stamp(client.auto_state.accelerator_finished_at):''}</p>}
     {lastCommand&&<div className={'banner '+(lastCommand.status==='failed'?'danger':'')} role="status">{({queued:'等待领取',running:'正在采集',finished:'同步完成',failed:'采集失败'} as Row)[lastCommand.status]||'同步状态'}：{lastCommand.message} · {stamp(lastCommand.updated_at||lastCommand.finished||lastCommand.started||lastCommand.created)}</div>}
-   <p className="panelnote">批量上品后可主动刷新，手动请求优先于下一阶段的自动采集；已有采集阶段会先完成并显示排队进度。自动更新开启且商家后台在线时，商品、报名记录、加速器与流量每 2 小时采集；自动失败后等下一周期，也可手动重试。页面每 3 秒查看请求进度、每 15 秒读取本地列表，不会触发平台抓取。加速器按商品信息的“流量加速中”标志判断：有标志为已开启，无标志为未开启；采集未完成或超过 2 小时 30 分钟的状态标为待确认，始终保留采集时间。<a href="https://agentseller-us.temu.com/main/flux-analysis" target="_blank" rel="noreferrer">打开加速器来源页 ↗</a></p>
+   <p className="panelnote">批量上品后可主动刷新，手动请求优先于下一阶段的自动采集；已有采集阶段会先完成并显示排队进度。自动更新开启且商家后台在线时，商品、报名记录、加速器与流量每 2 小时采集；自动失败后等下一周期，也可手动重试。页面每 3 秒查看请求进度、每 15 秒读取本地列表，不会触发平台抓取。加速器按商品信息的“流量加速中”标志判断：有标志为已开启，无标志为未开启。商品、活动、加速器及流量标记的数据有效期为 {(data?.freshnessWindowMinutes ?? 720) / 60} 小时；未采集或过期的状态标为待确认，始终保留采集时间。<a href="https://agentseller-us.temu.com/main/flux-analysis" target="_blank" rel="noreferrer">打开加速器来源页 ↗</a></p>
    {data&&<><div className="metricgrid">
     <div><strong>{data.counts.onSale}</strong><span>在售 SPU</span></div><div><strong>{data.counts.skus}</strong><span>在售规格</span></div>
     <div><strong>{data.counts.enrolled}</strong><span>有报名记录</span></div>
     <div><strong>{data.counts.acceleratorSwitchEnabled??0} / {data.counts.onSale}</strong><span>加速器已开启</span></div>
     <div><strong>{data.counts.acceleratorSwitchDisabled??0} / {data.counts.onSale}</strong><span>加速器未开启</span></div>
     <div><strong>{data.counts.acceleratorSwitchUnknown??data.counts.onSale} / {data.counts.onSale}</strong><span>加速器待确认</span></div>
-   </div><p className="panelnote">商品：{stamp(data.sources.products.captured)}（{fresh(data.sources.products)}） · 活动：{stamp(data.sources.activities.captured)}（{fresh(data.sources.activities)}） · 加速器：{stamp(data.sources.accelerators?.captured)} · 有效期内已确认开启或未开启 {data.sources.accelerators?.switchFreshProducts??0} / {data.counts.onSale}</p></>}
+   </div><p className="panelnote">商品：{stamp(data.sources.products.captured)}（{fresh(data.sources.products)}） · 活动：{stamp(data.sources.activities.captured)}（{fresh(data.sources.activities)}） · 加速器：{stamp(data.sources.accelerators?.captured)} · 有效期内已确认开启或未开启 {data.sources.accelerators?.switchFreshProducts??0} / {data.counts.onSale}</p>
+   <p className="panelnote" aria-label="平台类目采集覆盖">平台类目已采集 {data.categoryCoverage?.matched??data.products.filter((row:Row)=>!row.platformCategoryConflict&&!!platformLabel(row)).length} / {data.products.length} 个 SPU · 待采集 {data.categoryCoverage?.missing??data.products.filter((row:Row)=>platformNodes(row)[0]?.key==='missing').length} · 冲突待核对 {data.categoryCoverage?.conflicts??data.products.filter((row:Row)=>row.platformCategoryConflict).length}。{data.products.some((row:Row)=>!platformLabel(row)&&!row.platformCategoryConflict)&&'请重新加载统一助手到 0.20.13，刷新商家后台和工作台，再点击“立即更新商品＋活动”补采平台类目。'}平台类目缺失的商品仍保留在列表中。</p></>}
   </section>
   <section className="panel">
    <div className="filterbar">
     <Button variant={pool==='on_sale'?'default':'outline'} onClick={()=>setPool('on_sale')}>在售 {data?.counts.onSale??'—'}</Button>
     <Button variant={pool==='not_on_sale'?'default':'outline'} onClick={()=>setPool('not_on_sale')}>垃圾堆 · 不在售 {data?.counts.notOnSale??'—'}</Button>
     {!!data?.counts.unknown&&<Button variant={pool==='unknown'?'default':'outline'} onClick={()=>setPool('unknown')}>状态待确认 {data.counts.unknown}</Button>}
-    <input aria-label="搜索商品状态" placeholder="搜索类目、SPU、SKU、货号或活动" value={query} onChange={event=>setQuery(event.target.value)}/>
+    <input aria-label="搜索商品状态" style={{width:240,maxWidth:'100%'}} placeholder="搜索类目、SPU、SKU、货号或活动" value={query} onChange={event=>setQuery(event.target.value)}/>
     {pool==='on_sale'&&<>
-     <select aria-label="商品类目筛选" value={category} onChange={event=>setCategory(event.target.value)}><option value="">全部类目（{data?.products?.length??0}）</option>{categories.map(item=><option key={item.name} value={item.name}>{item.name}（{item.count}）</option>)}</select>
+     <select aria-label="平台类目筛选" style={{width:300,maxWidth:'100%'}} title={platformCategories.find(item=>item.key===platformCategory)?.label||'按平台完整类目筛选，可选择上级类目'} value={platformCategory} onChange={event=>setPlatformCategory(event.target.value)}><option value="">全部平台类目（{data?.products?.length??0}）</option>{platformCategories.map(item=><option key={item.key} value={item.key}>{item.label}（{item.count}）</option>)}</select>
+     <select aria-label="商品类目筛选" style={{width:180,maxWidth:'100%'}} value={category} onChange={event=>setCategory(event.target.value)}><option value="">全部业务类目（{data?.products?.length??0}）</option>{categories.map(item=><option key={item.name} value={item.name}>{item.name}（{item.count}）</option>)}</select>
       <select aria-label="活动状态筛选" value={activity} onChange={event=>setActivity(event.target.value)}><option value="all">全部活动状态</option><option value="enrolled">有报名记录</option><option value="none">当前无生效活动</option><option value="unknown">活动待确认</option></select>
      <select aria-label="加速器状态筛选" value={boost} onChange={event=>setBoost(event.target.value)}><option value="all">全部加速器状态</option><option value="enabled">已开启</option><option value="disabled">未开启</option><option value="unknown">待确认</option></select>
     </>}
    </div>
-   {pool==='on_sale'&&data?.mallId===mall&&<p className="panelnote" aria-label="类目筛选结果">当前{category?'「'+category+'」':'全部类目'} · 符合筛选 {rows.length} / {data.products.length} 个 SPU。类目按本店可维护规则匹配；信息不足或冲突的保留在未分类，可维护规则或手动归类。{(category||query||activity!=='all'||boost!=='all')&&<Button variant="ghost" onClick={()=>{setCategory('');setQuery('');setActivity('all');setBoost('all')}}>清除筛选</Button>}</p>}
-   <BatchSelectionTools selection={batch} total={rows.length} label="商品状态" copyFields={[{label:'SPU',value:row=>row.spuId}]} columns={[{label:'SPU',value:row=>row.spuId},{label:'类目',value:row=>row.categoryName},{label:'在售状态',value:row=>row.saleStatusLabel},{label:'活动',value:row=>row.activityStatusLabel},{label:'加速器',value:row=>row.acceleratorSwitchStatusLabel},{label:'采集时间',value:row=>stamp(row.captured)}]}/>
+   {pool==='on_sale'&&data?.mallId===mall&&<><p className="panelnote" aria-label="类目筛选结果">当前{category?'「'+category+'」':'全部类目'}{platformCategory?' · '+(platformCategories.find(item=>item.key===platformCategory)?.label||'所选平台类目'):''} · 符合筛选 {rows.length} / {data.products.length} 个 SPU。优先按平台类目归类；本地映射可合并业务类目，人工归类保留优先。缺少平台类目时使用货号或规格规则。{(category||platformCategory||query||activity!=='all'||boost!=='all')&&<Button variant="ghost" onClick={()=>{setCategory('');setPlatformCategory('');setQuery('');setActivity('all');setBoost('all')}}>清除筛选</Button>}</p><p className="panelnote" aria-label="筛选商品报名情况">当前筛选：有报名 {rows.filter(row=>row.activityStatus==='enrolled').length} · 当前无生效活动 {rows.filter(row=>row.activityStatus==='none').length} · 待确认 {rows.filter(row=>row.activityStatus==='unknown').length}。报名按同店 SPU、SKC、SKU 编号核对；活动快照较旧时以采集时间为准。</p></>}
+   <BatchSelectionTools selection={batch} total={rows.length} label="商品状态" copyFields={[{label:'SPU',value:row=>row.spuId}]} columns={[{label:'SPU',value:row=>row.spuId},{label:'类目',value:row=>row.categoryName},{label:'平台类目',value:row=>platformLabel(row)},{label:'平台类目ID',value:row=>row.platformCategoryId},{label:'归类依据',value:row=>row.categorySourceLabel},{label:'在售状态',value:row=>row.saleStatusLabel},{label:'活动',value:row=>row.activityStatusLabel},{label:'活动名称',value:row=>(row.activityNames||[]).join('；')},{label:'加速器',value:row=>row.acceleratorSwitchStatusLabel},{label:'采集时间',value:row=>stamp(row.freshness?.captured||row.captured)}]}/>
    {pool==='on_sale'&&<>
     <div className="buttons"><select aria-label="批量归类目标" value={batchCategory} disabled={!selected.length||busy||!canBatch} onChange={event=>setBatchCategory(event.target.value)}><option value="">恢复自动匹配</option>{data?.categoryConfig?.rules.map((rule:Row)=><option key={rule.name} value={rule.name}>{rule.name}</option>)}</select><Button disabled={!selected.length||selected.length>500||busy||!canBatch} onClick={categorize}>批量归类（{selected.length}）</Button></div>
     <p className="panelnote">已勾选 {selected.length} 个 SPU，每批最多 500 个。仅维护本地类目，保留已维护规格。切换店铺或筛选条件会清空勾选。</p>
@@ -135,7 +152,7 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
     <div className="tablewrap"><table><thead><tr><th>选择</th><th>SPU</th><th>在售状态</th>{pool==='on_sale'?<><th>活动</th><th>流量加速器</th><th>规格与价格</th></>:<th>状态更新时间</th>}</tr></thead><tbody>
     {shown.map(row=><tr key={row.spuId} data-spu-id={row.spuId} data-category={row.categoryName||undefined} data-batch-selected={batch.isSelected(row)}>
      <td><input className="batch-row-check" type="checkbox" aria-label={`选择商品状态 SPU ${row.spuId}`} checked={batch.isSelected(row)} onChange={event=>batch.toggle(row,event.target.checked)}/></td>
-     <td>{row.images?.[0]&&<img className="feature-thumb" src={row.images[0]} alt="" loading="lazy"/>}<div>{row.spuId}</div>{pool==='on_sale'&&<><span className="tag" title={row.categorySourceLabel}>{row.categoryName||'未分类'}</span><small className="panelnote" style={{display:'block'}}>{row.categorySourceLabel}</small><Button variant="ghost" onClick={()=>setEditingProduct(row)}>维护商品</Button></>}</td>
+     <td>{row.images?.[0]&&<img className="feature-thumb" src={row.images[0]} alt="" loading="lazy"/>}<div>{row.spuId}</div>{pool==='on_sale'&&<><span className="tag" title={row.categorySourceLabel}>{row.categoryName||'未分类'}</span><small className="panelnote" style={{display:'block'}}>{row.categorySourceLabel}</small><small className="panelnote" style={{display:'block',maxWidth:300,overflowWrap:'anywhere'}}>{row.platformCategoryConflict?'平台类目冲突，待核对':platformLabel(row)?'平台：'+platformLabel(row):'平台类目待采集'}{row.platformCategoryId?<><br/>类目 ID {row.platformCategoryId}</>:null}</small><Button variant="ghost" onClick={()=>setEditingProduct(row)}>维护商品</Button></>}</td>
      <td><span className={'tag '+(pool==='on_sale'?'green':'')}>{row.saleStatusLabel}</span>{row.freshness?.stale&&<p className="panelnote">在售快照较旧</p>}</td>
      {pool==='on_sale'?<>
       <td><span className={'tag '+(row.activityStatus==='enrolled'?'green':'amber')}>{row.activityStatusLabel}</span>{row.activityNames.map((name:string)=><div key={name}>{name}</div>)}</td>

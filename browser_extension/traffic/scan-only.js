@@ -23,7 +23,7 @@
   }
   const initial=await waitInfo('等待商品分页加载');
   const total=initial.total,size=initial.pageSize,seen=new Set(),pages=[],items=[];let rowCount=0,previousPage='',lastIdentityError='';
-  const summary=complete=>({version:'1.0.6',started,finished:new Date().toISOString(),complete,total,scanned:seen.size,rowsRead:rowCount,uniqueSpu:new Set(items.map(item=>item.id)).size,matched:items.filter(item=>item.matched).length,pages,items});
+  const summary=complete=>({version:'1.0.7',started,finished:new Date().toISOString(),complete,total,scanned:seen.size,rowsRead:rowCount,uniqueSpu:new Set(items.map(item=>item.id)).size,matched:items.filter(item=>item.matched).length,pages,items});
   function validate(info){
    if(info.pageSize!==size)throw Error('运行中更改了每页条数，已停止；请在停止状态设置好后重新扫描');
    const completed=mutable?Number(options.completedCount?.()||0):0;
@@ -98,10 +98,25 @@
  }
  async function run(config,options={}){
   if(root.__trafficScanRunning)throw Error('当前页面已有扫描任务，请先停止或等待完成');
-  root.__trafficScanRunning=true;let paused=false,completed=false;
-  try{paused=await D.pauseUpdater();const result=await collect(config,options);completed=true;return result}
-  catch(error){if(paused)error.message+='；原工作台自动更新保持暂停，避免继续请求';throw error}
-  finally{try{if(paused&&completed)await D.restoreUpdater()}finally{root.__trafficScanRunning=false}}
+  root.__trafficScanRunning=true;let paused=false,completed=false,result,stage='pause_auto_updates';
+  try{
+   await options.onLoading?.({message:'核对并暂停工作台自动更新'});
+   paused=await D.pauseUpdater();stage='scan_list';
+   result=await collect(config,options);completed=true;return result;
+  }
+  catch(error){
+   error.trafficStage=error.trafficStage||stage;
+   if(stage==='pause_auto_updates')error.message='准备扫描时无法确认自动更新状态：'+error.message;
+   if(paused)error.message+='；原工作台自动更新保持暂停，避免继续请求';throw error;
+  }
+  finally{
+   try{
+    if(paused&&completed){
+     try{await D.restoreUpdater()}
+     catch(error){error.trafficStage='restore_auto_updates';error.partial=result;error.message='列表扫描已完成，但恢复自动更新失败：'+error.message;throw error}
+    }
+   }finally{root.__trafficScanRunning=false}
+  }
  }
  root.TrafficScanOnly={run};
 })(globalThis);

@@ -119,6 +119,24 @@ class ProductOperationsTests(unittest.TestCase):
         self.assertEqual(row["skus"][0]["activities"][0]["status"], "ended")
         self.assertEqual(row["skus"][0]["activities"][0]["activityPrice"], 60)
 
+    def test_missing_activity_in_partial_or_filtered_snapshot_is_unknown(self):
+        self.upload([self.product()])
+        self.upload([], kind="activities", complete=False)
+        self.assertEqual(self.state()["products"][0]["activityStatus"], "unknown")
+        self.upload([], kind="activities", meta={"enrollment_scope": "active_only"})
+        row = self.state()["products"][0]
+        self.assertEqual(row["activityStatus"], "unknown")
+        self.assertFalse(row["activityCoverage"]["complete"])
+        self.upload([], kind="activities", meta={"enrollment_scope": "all"})
+        self.assertEqual(self.state()["products"][0]["activityStatus"], "none")
+
+    def test_unresolved_activity_status_is_not_reported_as_no_enrollment(self):
+        self.upload([self.product()])
+        self.upload([self.activity(statusKey="unknown", sessionStatus=None)], kind="activities")
+        row = self.state()["products"][0]
+        self.assertEqual(row["activityStatus"], "unknown")
+        self.assertEqual(row["activityStatusLabel"], "活动状态待确认")
+
     def save_category(self, name, sizes, mall="123"):
         self.db.execute("INSERT OR REPLACE INTO activity_settings VALUES(?,?,?)",
                         ("preset:" + mall + ":" + name, self.captured,
@@ -197,21 +215,21 @@ class ProductOperationsTests(unittest.TestCase):
         self.assertEqual(row["accelerators"][0]["price"], 75.34)
         self.assertEqual(row["accelerators"][0]["skuId"], "300001")
 
-    def test_two_hour_schedule_and_snapshot_grace_are_consistent(self):
+    def test_two_hour_schedule_and_twelve_hour_validity_are_independent(self):
         now=datetime.now(timezone.utc)
         self.assertFalse(product_operations.freshness((now-timedelta(minutes=120)).isoformat(),now)['stale'])
-        self.assertFalse(product_operations.freshness((now-timedelta(minutes=150)).isoformat(),now)['stale'])
-        self.assertTrue(product_operations.freshness((now-timedelta(minutes=151)).isoformat(),now)['stale'])
+        self.assertFalse(product_operations.freshness((now-timedelta(minutes=720)).isoformat(),now)['stale'])
+        self.assertTrue(product_operations.freshness((now-timedelta(minutes=721)).isoformat(),now)['stale'])
         self.upload([self.product()])
         self.upload([self.boost()],kind='accelerators',complete=False,captured=(now-timedelta(minutes=120)).isoformat())
         data=self.state()
         self.assertEqual(data['products'][0]['acceleratorStatus'],'enabled')
         self.assertEqual(data['collectionIntervalMinutes'],120)
-        self.assertEqual(data['freshnessWindowMinutes'],150)
+        self.assertEqual(data['freshnessWindowMinutes'],720)
 
     def test_stale_boost_is_not_presented_as_current_enabled(self):
         self.upload([self.product()])
-        old = (datetime.now(timezone.utc)-timedelta(hours=3)).isoformat()
+        old = (datetime.now(timezone.utc)-timedelta(hours=13)).isoformat()
         self.upload([self.boost()], kind="accelerators", complete=False, captured=old)
         row = self.state()["products"][0]
         self.assertEqual(row["acceleratorStatus"], "unknown")
@@ -254,7 +272,7 @@ class ProductOperationsTests(unittest.TestCase):
     def test_stale_and_conflicting_accelerator_switches_stay_unknown(self):
         self.upload([self.product(), self.product("100002", "200002", "300002")])
         self.upload([self.boost()], kind="accelerators", complete=False,
-                    captured=(datetime.now(timezone.utc)-timedelta(minutes=151)).isoformat())
+                    captured=(datetime.now(timezone.utc)-timedelta(minutes=721)).isoformat())
         self.upload([self.boost("enabled", spuId="100002"),
                      self.boost("disabled", spuId="100002", siteName="欧区站")],
                     kind="accelerators", complete=False)
@@ -324,13 +342,13 @@ class ProductOperationsTests(unittest.TestCase):
                 product_operations.accelerator_targets(self.connect, invalid)
 
     def test_accelerator_targets_reject_stale_snapshot_even_after_fresh_partial(self):
-        captured = (datetime.now(timezone.utc)-timedelta(minutes=151)).isoformat()
+        captured = (datetime.now(timezone.utc)-timedelta(minutes=721)).isoformat()
         self.upload([self.product()], captured=captured)
         self.upload([self.product(onSale=True)], complete=False)
-        with self.assertRaisesRegex(ValueError, "150分钟"):
+        with self.assertRaisesRegex(ValueError, "12小时"):
             product_operations.accelerator_targets(self.connect, "123")
         self.upload([self.product()])
-        now = datetime.fromisoformat(self.captured) + timedelta(minutes=150)
+        now = datetime.fromisoformat(self.captured) + timedelta(minutes=720)
         self.assertTrue(product_operations.accelerator_targets(self.connect, "123", now=now)["complete"])
 
     def test_accelerator_targets_require_matching_archive_and_valid_spu(self):

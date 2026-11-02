@@ -279,12 +279,126 @@
     const amount = Number(cents);
     return Number.isFinite(amount) ? amount / 100 : null;
   };
+  // Product taxonomy belongs to the product row. Never derive it from the
+  // selected filter, SKU pack classification (单品/混装), title or dimensions.
+  const productCategory = (product) => {
+    const empty = {categoryId:"", categoryName:"", categoryPath:[], categoryIds:[], categorySource:""};
+    const name = value => typeof value === "string" && value.trim().length <= 200 && !/[\u0000-\u001f]/.test(value) ? value.trim() : "";
+    const id = value => (typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value))) && /^[1-9]\d{0,39}$/.test(String(value)) ? String(value) : "";
+    const first = (object, keys, normalize) => {
+      for (const key of keys) { const value = normalize(object?.[key]); if (value) return value; }
+      return "";
+    };
+    const node = item => item && typeof item === "object" && !Array.isArray(item) ? {
+      id:first(item,["categoryId","catId","id"],id),
+      name:first(item,["categoryName","catName","name"],name),
+    } : {id:"",name:name(item)};
+    // 2026-11-01 live product diagnostics identify leafCat.catId/catName.
+    // Primitive categories.catN values remain evidence-only. Object nodes may
+    // supply a path only through their explicit catId/catName and matching leaf.
+    const candidates = [product?.leafCat, product?.productCategoryInfo, product?.categoryInfo, product].filter(value => value && typeof value === "object" && !Array.isArray(value));
+    const observations = [];
+    const conflicting = (left,right) => (left.id && right.id && left.id !== right.id) || (left.name && right.name && left.name !== right.name);
+    const conflict = () => ({...empty,categorySource:"temu_product_catalog_conflict"});
+    if (product?.categories && typeof product.categories === "object" && !Array.isArray(product.categories) && product?.leafCat && typeof product.leafCat === "object" && !Array.isArray(product.leafCat)) {
+      const leaf = {id:id(product.leafCat.catId),name:name(product.leafCat.catName)};
+      let unknownNode = false;
+      const levels = Array.from({length:10},(_,index) => {
+        const raw = product.categories[`cat${index + 1}`];
+        if (raw == null) return {id:"",name:""};
+        if (typeof raw !== "object" || Array.isArray(raw)) { unknownNode = true; return {id:"",name:""}; }
+        const item = {id:id(raw.catId),name:name(raw.catName)};
+        if (!item.id && !item.name && Object.keys(raw).length) unknownNode = true;
+        return item;
+      });
+      const start = levels.findIndex(item => item.id || item.name), end = levels.findLastIndex(item => item.id || item.name);
+      if (!unknownNode && start >= 0 && (leaf.id || leaf.name)) {
+        const last = levels[end];
+        if (!conflicting(leaf,last) && ((leaf.id && leaf.id === last.id) || (leaf.name && leaf.name === last.name))) {
+          candidates.push({categoryPath:levels.slice(start,end + 1)});
+        }
+      }
+    }
+    for (const source of candidates) {
+      let nodes = [];
+      for (const key of ["categoryPath","categoryNamePath","categoryNameList","catNameList"]) {
+        const path = source[key];
+        if (Array.isArray(path) && path.length <= 10) {
+          const parsed = path.map(node);
+          if (parsed.some(item => item.name || item.id)) nodes = parsed;
+        }
+        else if (typeof path === "string" && /[>＞→]/.test(path)) nodes = path.split(/\s*[>＞→]+\s*/).map(node).filter(item => item.name);
+        if (nodes.length) break;
+      }
+      if (!nodes.length) {
+        const levels = [];
+        for (let level = 1; level <= 10; level++) {
+          const item = {
+            id:first(source,[`cat${level}Id`,`category${level}Id`],id),
+            name:first(source,[`cat${level}Name`,`category${level}Name`],name),
+          };
+          levels.push(item);
+        }
+        const firstLevel = levels.findIndex(item => item.id || item.name);
+        const lastLevel = levels.findLastIndex(item => item.id || item.name);
+        if (firstLevel >= 0) nodes = levels.slice(firstLevel,lastLevel + 1);
+      }
+      const ids = source.categoryIds || source.categoryIdPath || source.catIdList || source.categoryIdList;
+      if (Array.isArray(ids) && ids.length === nodes.length) nodes = nodes.map((item,index) => ({...item,id:item.id || id(ids[index])}));
+      const direct = {
+        id:first(source,["leafCategoryId","categoryId","catId","productCategoryId"],id),
+        name:first(source,["leafCategoryName","categoryName","catName","productCategoryName"],name),
+      };
+      if (!nodes.length && direct.name && /[>＞→]/.test(direct.name)) {
+        nodes = direct.name.split(/\s*[>＞→]+\s*/).map(node).filter(item => item.name);
+        direct.name = nodes.at(-1)?.name || "";
+      }
+      const last = nodes.at(-1);
+      if (last && conflicting(direct,last)) return conflict();
+      if (last) { last.id ||= direct.id; last.name ||= direct.name; }
+      else if (direct.id || direct.name) nodes = [direct];
+      if (!nodes.length) continue;
+      observations.push(nodes);
+    }
+    if (!observations.length) return empty;
+    let merged = observations[0];
+    for (const nodes of observations.slice(1)) {
+      const leaf = merged.at(-1), otherLeaf = nodes.at(-1);
+      if (conflicting(leaf,otherLeaf)) return conflict();
+      // A leaf-only observation may enrich a complete path. Two explicit
+      // ancestor paths must agree; never invent a parent/child interpretation.
+      if (merged.length > 1 && nodes.length > 1) {
+        if (merged.length !== nodes.length) return conflict();
+        for (let index = 0; index < nodes.length; index++) {
+          if (conflicting(merged[index],nodes[index])) return conflict();
+          merged[index].id ||= nodes[index].id;
+          merged[index].name ||= nodes[index].name;
+        }
+      } else {
+        const rich = nodes.length > merged.length ? nodes : merged;
+        rich.at(-1).id ||= leaf.id || otherLeaf.id;
+        rich.at(-1).name ||= leaf.name || otherLeaf.name;
+        merged = rich;
+      }
+    }
+    const leaf = merged.at(-1);
+    // A gap must not make an ancestor appear to be the leaf. Keep only the
+    // continuous suffix ending at the observed leaf, independently per field.
+    const suffix = field => {
+      const values = [];
+      for (let index = merged.length - 1; index >= 0 && merged[index][field]; index--) values.unshift(merged[index][field]);
+      return values;
+    };
+    return {categoryId:leaf.id, categoryName:leaf.name,
+      categoryPath:suffix("name"), categoryIds:suffix("id"), categorySource:"temu_product_catalog"};
+  };
   const compactProductRows = (pageRows) => pageRows.flatMap((product) => {
     const skus = Array.isArray(product?.productSkuSummaries) ? product.productSkuSummaries : [];
     const base = {
       spuId:String(product?.productId || ""),
       skcId:String(product?.productSkcId || ""),
       imageUrl:String(product?.mainImageUrl || ""),
+      ...productCategory(product),
       onSale:true, lifecycleStatus:"已发布到站点", saleStatusSource:"skcTopStatus:100", currency:"CNY",
     };
     if (!skus.length) return [{...base, skuId:"", skuCode:"", declaredPrice:null, skuCategory:""}];
@@ -302,6 +416,66 @@
   });
   async function products({requestHeaders = {}, capturedMallId = "", pageSize = 100} = {}) {
     const rows = [];
+    const categoryFields = new Set();
+    const categoryTypes = new Map();
+    const categoryTaxonomies = new Map();
+    const categoryDiagnostics = {parser:"temu_leaf_cat_v1", productCount:0, sourceCounts:{}, fieldNames:[], fieldTypes:{}};
+    const rememberCategoryTaxonomy = (product) => {
+      const leaf = product?.leafCat;
+      const leafId = (typeof leaf?.catId === "string" || (typeof leaf?.catId === "number" && Number.isSafeInteger(leaf.catId))) && /^[1-9]\d{0,39}$/.test(String(leaf.catId)) ? String(leaf.catId) : "";
+      if (!leafId || categoryTaxonomies.has(leafId) || categoryTaxonomies.size >= 100) return;
+      const short = value => typeof value === "string" && value.trim().length <= 200 && !/[\u0000-\u001f]/.test(value) ? value.trim() : undefined;
+      const scalar = value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : short(value);
+      const snapshot = {leafCat:{catId:leafId},categories:{}};
+      const leafName = short(leaf.catName);
+      if (leafName) snapshot.leafCat.catName = leafName;
+      const categories = product?.categories;
+      if (categories && typeof categories === "object" && !Array.isArray(categories)) {
+        for (let level = 1; level <= 10; level++) {
+          const key = `cat${level}`, raw = categories[key];
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            const safe = {};
+            for (const field of ["catId","catName","catEnName","catType"]) {
+              const value = scalar(raw[field]);
+              if (value !== undefined) safe[field] = value;
+            }
+            if (Object.keys(safe).length) snapshot.categories[key] = safe;
+          } else {
+            const value = scalar(raw);
+            if (value !== undefined) snapshot.categories[key] = value;
+          }
+        }
+      }
+      categoryTaxonomies.set(leafId,snapshot);
+    };
+    const rememberCategorySchema = (product) => {
+      // Structure only: never persist arbitrary product values or response data.
+      const add = (field,value) => {
+        field = field.slice(0,160);
+        if (categoryFields.size >= 120 && !categoryFields.has(field)) return;
+        categoryFields.add(field);
+        const types = categoryTypes.get(field) || new Set();
+        types.add(value === null ? "null" : Array.isArray(value) ? "array" : typeof value);
+        categoryTypes.set(field,types);
+      };
+      const walk = (value,field,depth) => {
+        add(field,value);
+        if (depth >= 2 || !value || typeof value !== "object") return;
+        if (Array.isArray(value)) {
+          for (const child of value.slice(0,3)) walk(child,`${field}[]`,depth + 1);
+        } else {
+          for (const key of Object.keys(value).slice(0,30)) walk(value[key],`${field}.${key.slice(0,70)}`,depth + 1);
+        }
+      };
+      for (const key of Object.keys(product || {}).slice(0,150)) {
+        if (!/(?:cat|cate|leaf)/i.test(key)) continue;
+        walk(product[key],key.slice(0,80),0);
+      }
+      const source = productCategory(product).categorySource || "missing";
+      categoryDiagnostics.sourceCounts[source] = (categoryDiagnostics.sourceCounts[source] || 0) + 1;
+      categoryDiagnostics.productCount += 1;
+      rememberCategoryTaxonomy(product);
+    };
     let page = 1;
     let total = 0;
     let collectedSkcs = 0;
@@ -315,6 +489,7 @@
       if (!pageRows.length && (!hasProductList(data) || !/"(?:total|totalCount|totalNum|recordCount|count)":0(?:[,}])/.test(JSON.stringify(data)))) throw new Error("商品空列表缺少零总数证明，保留上次状态");
       total = Math.max(total, productTotalFromPayload(data));
       collectedSkcs += pageRows.length;
+      pageRows.forEach(rememberCategorySchema);
       rows.push(...compactProductRows(pageRows));
       progress({stage:"products", message:`在售商品：已采集 ${collectedSkcs}${total ? ` / ${total}` : ""} 个 SKC，展开 ${rows.length} 个 SKU`, current:page, total:total ? Math.ceil(total / pageSize) : Math.max(page, 1), rows:rows.length});
       if (!pageRows.length) {
@@ -334,7 +509,13 @@
       }
       page += 1;
     }
-    return {success:true, rows, pages:page, total:total || collectedSkcs, collectedSkcs, pageSize, complete, completionReason, sourceMallId:String(capturedMallId || "")};
+    const categoryCoverage = {skuCount:rows.length,
+      classifiedSkus:rows.filter(row => row.categoryId || row.categoryName).length,
+      missingSkus:rows.filter(row => !row.categoryId && !row.categoryName).length,
+      conflictSkus:rows.filter(row => row.categorySource === "temu_product_catalog_conflict").length};
+    categoryDiagnostics.fieldNames = [...categoryFields].sort();
+    categoryDiagnostics.fieldTypes = Object.fromEntries([...categoryTypes].sort(([left],[right]) => left.localeCompare(right)).map(([field,types]) => [field,[...types].sort()]));
+    return {success:true, rows, pages:page, total:total || collectedSkcs, collectedSkcs, pageSize, complete, completionReason, categoryCoverage, categoryDiagnostics, categoryTaxonomies:[...categoryTaxonomies.values()], sourceMallId:String(capturedMallId || "")};
   }
   const centsPrice = (value) => {
     if (value == null || value === "") return null;

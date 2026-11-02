@@ -46,13 +46,13 @@ class PatrolHealthTests(unittest.TestCase):
     def test_stale_last_known_enabled_is_not_unknown_alert(self):
         self.product.update(
             activityStatus='enrolled', acceleratorStatus='unknown',
-            accelerators=[{'status': 'enabled', 'freshness': {'stale': True, 'ageMinutes': 200}}])
+            accelerators=[{'status': 'enabled', 'freshness': {'stale': True, 'ageMinutes': 780}}])
         self.assertEqual(patrol.health_anomalies(self.connect, '123'), [])
 
     def test_stale_last_known_eligible_still_flags_missing_boost(self):
         self.product.update(
             activityStatus='enrolled', acceleratorStatus='unknown',
-            accelerators=[{'status': 'eligible', 'freshness': {'stale': True, 'ageMinutes': 200}}])
+            accelerators=[{'status': 'eligible', 'freshness': {'stale': True, 'ageMinutes': 780}}])
         item = patrol.health_anomalies(self.connect, '123')[0]
         self.assertEqual(item['reasons'], ['有活动无加速器'])
         self.assertEqual(item['acceleratorResolved'], 'eligible')

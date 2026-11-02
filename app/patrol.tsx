@@ -6,6 +6,7 @@ import {BatchSelectionTools,useBatchSelection} from './batch-selection';
 const PAGE_SIZE = 50;
 
 type Freshness = {captured?: string; ageMinutes?: number | null; stale?: boolean; observedProducts?: number; freshProducts?: number};
+type TrafficCoverage = {total: number; observed: number; fresh: number; attention: number; clear: number; unknown: number; stale: number};
 type Alert = {
   alertKey: string; spuId: string; kind: string; reasons: string[]; tags?: string[]; cleared: boolean;
   imageUrl?: string; images?: string[]; activityNames?: string[];
@@ -18,7 +19,7 @@ type State = {
   generatedAt?: string;
   sources?: {products?: Freshness; activities?: Freshness; accelerators?: Freshness};
   health: {items: Alert[]; unclearedCount: number};
-  trafficAttention: {items: Alert[]; available: boolean; gap: string};
+  trafficAttention: {items: Alert[]; available: boolean; gap?: string; unclearedCount?: number; coverage?: TrafficCoverage};
   window: {active: boolean; slot: string; date: string};
   forceModal: boolean;
   warnModal?: boolean;
@@ -84,7 +85,14 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
       const fingerprint = JSON.stringify({
         generatedAt: value.generatedAt,
         uncleared: value.health?.unclearedCount,
-        keys: (value.health?.items || []).map((item) => item.alertKey),
+        keys: (value.health?.items || []).map((item) => [item.alertKey, item.cleared]),
+        traffic: {
+          keys: (value.trafficAttention?.items || []).map((item) => [item.alertKey, item.cleared]),
+          uncleared: value.trafficAttention?.unclearedCount,
+          coverage: value.trafficAttention?.coverage,
+          available: value.trafficAttention?.available,
+          gap: value.trafficAttention?.gap,
+        },
         sources: value.sources,
       });
       setData(value);
@@ -95,7 +103,8 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
         const staleBoost = (value.health?.items || []).filter((item) => item.acceleratorFromStale).length;
         setStatus(
           (changed ? '已重新读取本地库，清单有变化。' : '已重新读取本地库，清单与上次相同。')
-          + ' 待处理 ' + (value.health?.unclearedCount ?? 0) + ' 条'
+          + ' 健康预警待处理 ' + (value.health?.unclearedCount ?? 0) + ' 条，流量待关注待处理 '
+          + (value.trafficAttention?.unclearedCount ?? value.trafficAttention?.items.filter((item) => !item.cleared).length ?? 0) + ' 条'
           + (staleBoost ? '；其中 ' + staleBoost + ' 条仍用较旧加速器快照（需在商品状态页点「更新加速器状态」）' : '')
           + ' · ' + stamp(value.generatedAt)
         );
@@ -136,11 +145,15 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
       ...current.trafficAttention.items.filter((i) => !i.cleared).map((i) => i.alertKey)].join('|')
     : '';
   // Non-blocking warn: any uncleared alerts. Dismiss lasts until remount/refresh or alert set changes.
-  const shouldWarn = !!current && (current.warnModal ?? current.forceModal) && current.health.unclearedCount > 0;
+  const healthUncleared = current?.health.unclearedCount ?? 0;
+  const trafficUncleared = current?.trafficAttention.unclearedCount ?? current?.trafficAttention.items.filter((item) => !item.cleared).length ?? 0;
+  const shouldWarn = !!current && (current.warnModal ?? current.forceModal) && healthUncleared + trafficUncleared > 0;
   const showWarn = shouldWarn && handled !== signature;
 
   const healthItems = current?.health.items || [];
   const trafficItems = current?.trafficAttention.items || [];
+  const trafficCoverage = current?.trafficAttention.coverage;
+  const trafficComplete = !!trafficCoverage && trafficCoverage.fresh === trafficCoverage.total && trafficCoverage.unknown === 0 && trafficCoverage.stale === 0;
   const healthBatch=useBatchSelection(healthItems,preferredMall+'|health',item=>item.alertKey);
   const trafficBatch=useBatchSelection(trafficItems,preferredMall+'|traffic',item=>item.alertKey);
   const healthVisible=healthBatch.visibleRows,trafficVisible=trafficBatch.visibleRows;
@@ -222,11 +235,11 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
     ));
   }
 
-  const uncleared = current?.health.unclearedCount ?? 0;
+  const pendingText = `健康预警 ${healthUncleared} 条、流量待关注 ${trafficUncleared} 条未消警`;
   const slotLabel = current?.window.slot === 'morning' ? '上午 09:00–12:00' : current?.window.slot === 'afternoon' ? '下午 14:00–18:00' : '';
   const warnText = current?.window.active
-    ? `当前是北京时间${slotLabel}巡店时段，还有 ${uncleared} 条健康预警未消警。可先去巡店处理；关闭后仍可使用其他工具。`
-    : `还有 ${uncleared} 条健康预警未消警。北京时间每天 09:00–12:00、14:00–18:00 建议巡店消警；关闭后仍可使用其他工具。`;
+    ? `当前是北京时间${slotLabel}巡店时段，还有${pendingText}。可先去巡店处理；关闭后仍可使用其他工具。`
+    : `还有${pendingText}。北京时间每天 09:00–12:00、14:00–18:00 建议巡店消警；关闭后仍可使用其他工具。`;
 
   return <>
     {showWarn && (
@@ -255,6 +268,7 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
           <div>
             <h2>巡店</h2>
             <p>有活动须开加速器；无活动和无加速器可健康。广告商品标签尚未接入。</p>
+            <p>按后台「商品流量待关注」标记匹配，已匹配商品单独展示，不重复进入健康预警；未采到或过期的数据需更新确认。</p>
             <p>「刷新预警」只重读本机已采集数据，不会触发平台重新抓取。卡片上的「加速器快照较旧」要去商品状态页点「更新加速器状态」。</p>
           </div>
           <Button variant="outline" disabled={!preferredMall || busy || refreshing} onClick={() => load(undefined, true)}>
@@ -280,16 +294,21 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
           <Pager page={Math.min(healthPage, healthPages)} total={healthVisible.length} onChange={(page) => { setHealthPage(page); lists.current?.scrollIntoView({behavior: 'smooth'}); }} />
         </section>
         <section className="panel">
-          <h2>商品流量待关注</h2>
-          {!current.trafficAttention.available
-            ? <p>{current.trafficAttention.gap}，暂不能判断商品是否有红标。</p>
-            : trafficItems.length
+          <h2>商品流量待关注 · 待处理 {trafficUncleared}</h2>
+          {trafficCoverage && <p className="panelnote" aria-label="流量待关注覆盖">
+            在售 {trafficCoverage.total} 件 · 新鲜确认 {trafficCoverage.fresh} 件 · 待关注标记 {trafficCoverage.attention} 件 · 无此标记 {trafficCoverage.clear} 件 · 待确认 {trafficCoverage.unknown} 件
+            {trafficCoverage.stale ? `（含过期 ${trafficCoverage.stale} 件）` : ''}
+          </p>}
+          {current.trafficAttention.gap && <p role="status">{current.trafficAttention.gap}</p>}
+          {trafficItems.length
               ? <>
                   {batchTools(trafficBatch,trafficItems.length,'流量待关注')}
                   {alerts(trafficSlice,trafficBatch,'流量待关注')}
                   <Pager page={Math.min(trafficPage, trafficPages)} total={trafficVisible.length} onChange={setTrafficPage} />
                 </>
-              : <p>暂无流量待关注商品。</p>}
+              : trafficComplete
+                ? <p>{trafficCoverage?.total ? '当前完整快照暂无流量待关注商品。' : '当前在售商品范围为空。'}</p>
+                : !current.trafficAttention.gap && <p>此标记的数据尚未完整确认，暂不能判断是否存在流量待关注商品。</p>}
         </section>
       </div>}
     </div>}

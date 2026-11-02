@@ -1,17 +1,19 @@
 """Build a clean Windows portable distribution from explicit source allowlists."""
 from __future__ import annotations
 import argparse
+import ast
 import hashlib
 import importlib.metadata
 import json
 from pathlib import Path
+import re
 import shutil
 import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-NAME = 'Temu-Workbench-Windows-x64-20261030'
 RELEASE = json.loads((ROOT / 'workbench-release.json').read_text(encoding='utf-8'))['version']
+NAME = 'Temu-Workbench-Windows-x64-' + RELEASE
 COMPONENTS = json.loads((ROOT / 'workbench-components.json').read_text(encoding='utf-8-sig'))
 PRODUCTION = (
     'backend.py','merchant.py','collector.py','operations.py','sync_audit.py',
@@ -21,14 +23,44 @@ PRODUCTION = (
     'product_operations.py','product_rules.py','launcher.py','service_supervisor.py',
     'restart_workbench.py','portable_web.py','启动工作台.vbs',
     'workbench_version.py','workbench_processes.py','workbench-release.json','workbench-components.json','update_workbench.py','install_workbench.py','delta_update_workbench.py',
+    '从GitHub安装更新.cmd','maintenance/github_workbench_update.ps1',
 )
 EXCLUDED_DIRS = {'__pycache__','.git','.cache','logs','state'}
 DEPENDENCIES = ('psutil','PIL','playwright','greenlet','pyee','typing_extensions.py','tzdata')
+
+
+def traffic_version(extension):
+    runner = (Path(extension) / 'traffic/runner.js').read_text(encoding='utf-8')
+    versions = re.findall(r"globalThis\.__temuTrafficAssistant\s*=\s*\{version:\s*['\"]([0-9]+(?:\.[0-9]+){2})['\"]", runner)
+    if len(versions) != 1:
+        raise RuntimeError('Cannot identify the bundled traffic assistant version')
+    return versions[0]
+
+
+def validate_production_sources(source, production):
+    """Fail a release before staging if a new local runtime import was omitted."""
+    source = Path(source)
+    included = set(production)
+    modules = {path.stem: path.name for path in source.glob('*.py')}
+    for name in production:
+        path = source / name
+        if not path.is_file():
+            raise RuntimeError('Missing release source: ' + name)
+        if path.suffix != '.py':
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding='utf-8'), filename=name)):
+            imported = ([item.name.split('.')[0] for item in node.names] if isinstance(node, ast.Import)
+                        else [str(node.module).split('.')[0]] if isinstance(node, ast.ImportFrom) else [])
+            for module in imported:
+                if module in modules and modules[module] not in included:
+                    raise RuntimeError('Release omits runtime module ' + modules[module] + ' imported by ' + name)
+
+
 INFO = {
     'name':'织品工作台 · Windows 同事推广版',
     'release':RELEASE,
     'platform':'Windows 10/11 x64',
-    'uploader':COMPONENTS['uploader']['version'],'traffic_accelerator':'1.0.6',
+    'uploader':COMPONENTS['uploader']['version'],'traffic_accelerator':traffic_version(ROOT/'browser_extension'),
     'unified_extension':json.loads((ROOT/'browser_extension/manifest.json').read_text(encoding='utf-8'))['version'],
     'gpt_extension':json.loads((ROOT/'gpt_chrome_extension/manifest.json').read_text(encoding='utf-8'))['version'],
     'contains_user_data':False,
@@ -99,9 +131,12 @@ def stage(output, python_root, automation_root):
         raise RuntimeError('Output already exists; use a new output directory')
     if not (ROOT / 'dist-portable/index.html').is_file():
         raise RuntimeError('Build the portable frontend first')
+    validate_production_sources(ROOT, PRODUCTION)
     output.mkdir(parents=True)
     for name in PRODUCTION:
-        shutil.copy2(ROOT / name, output / name)
+        target = output / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
     (output / 'web-dist').mkdir()
     for name in ('index.html','favicon.svg'):
         shutil.copy2(ROOT / 'dist-portable' / name, output / 'web-dist' / name)
@@ -165,8 +200,8 @@ def stage(output, python_root, automation_root):
     check = 'if not exist "%~dp0runtime\\python\\python.exe" (\r\n  echo Python runtime missing. Right-click the ZIP and choose Extract All first.\r\n  pause\r\n  exit /b 1\r\n)\r\n'
     write(output / 'INSTALL.cmd', bootstrap+check+'"runtime\\python\\python.exe" -E -X utf8 -B install_workbench.py %*\r\nif errorlevel 1 pause\r\n')
     write(output / 'START.cmd', bootstrap+check+'start "" "runtime\\python\\pythonw.exe" -E -B launcher.py\r\n')
-    write(output / 'STOP.cmd', '@echo off\ncd /d "%~dp0"\n"runtime\\python\\python.exe" stop_workbench.py\npause\n')
-    write(output / 'UPDATE.cmd', '@echo off\nchcp 65001 >nul\ncd /d "%~dp0"\nset PYTHONUTF8=1\nset PYTHONDONTWRITEBYTECODE=1\n"%~dp0runtime\\python\\python.exe" "%~dp0update_workbench.py"\nif errorlevel 1 pause\n')
+    write(output / 'STOP.cmd', bootstrap+check+'"runtime\\python\\python.exe" -E -X utf8 -B stop_workbench.py\r\npause\r\n')
+    write(output / 'UPDATE.cmd', bootstrap+check+'"runtime\\python\\python.exe" -E -X utf8 -B update_workbench.py\r\nif errorlevel 1 pause\r\n')
     shutil.copy2(ROOT / 'release/stop_workbench.py', output / 'stop_workbench.py')
     write(output / '使用说明.md', README)
     write(output / '同事使用指南.txt', COLLEAGUE_GUIDE)
@@ -178,6 +213,7 @@ def stage(output, python_root, automation_root):
     print(json.dumps({'staged':str(output),'uploader_verified_files':uploader_count}, ensure_ascii=False), flush=True)
 
 def audit(output):
+    validate_production_sources(output, PRODUCTION)
     if (output / 'data').exists():
         raise RuntimeError('Never distribute a directory after running it with real data')
     for path in output.rglob('*'):
@@ -194,6 +230,8 @@ def audit(output):
         raise RuntimeError('GPT package contains a machine token')
     manifest = json.loads((output / 'browser_extension/manifest.json').read_text(encoding='utf-8'))
     if manifest['version'] != INFO['unified_extension']: raise RuntimeError('Unexpected extension version')
+    if traffic_version(output/'browser_extension') != INFO['traffic_accelerator']:
+        raise RuntimeError('Unexpected traffic assistant version')
     if json.loads((output/'gpt_chrome_extension/manifest.json').read_text(encoding='utf-8'))['version'] != INFO['gpt_extension']:
         raise RuntimeError('Unexpected GPT extension version')
     if not (output/'runtime/gpt-chrome/chrome-win64/chrome.exe').is_file():
@@ -213,7 +251,7 @@ def archive(output):
             with path.open('rb') as source: digest=hashlib.file_digest(source,'sha256').hexdigest()
             checksums.append(digest+'  '+path.relative_to(output).as_posix())
     write(output / 'SHA256SUMS.txt','\n'.join(checksums)+'\n')
-    archive_path=output.with_suffix('.zip')
+    archive_path=output.with_name(output.name+'.zip')
     if archive_path.exists(): raise RuntimeError('Archive already exists')
     with zipfile.ZipFile(archive_path,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as bundle:
         for path in sorted(output.rglob('*')):

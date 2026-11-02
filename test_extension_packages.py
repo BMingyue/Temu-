@@ -27,7 +27,7 @@ class ExtensionPackageTests(unittest.TestCase):
             self.assertIn('workbench.panel.fab.position.v1', manager)
 
     def test_product_status_scripts_match_source_in_every_package(self):
-        scripts = ['accelerator-query.js', 'content.js', 'sidepanel.js', 'service-worker.js', 'workbench-daily.js', 'page-bridge.js', 'workbench-auto.js', 'product-status-sync.js', 'product-state-evidence.js', 'extension-features.js']
+        scripts = ['accelerator-query.js', 'content.js', 'sidepanel.js', 'service-worker.js', 'workbench-daily.js', 'page-bridge.js', 'workbench-auto.js', 'product-status-sync.js', 'product-state-evidence.js', 'extension-features.js', 'traffic-background.js', 'workbench-web-bridge.js', 'traffic/adapter.js', 'traffic/scan-only.js', 'traffic/runner.js', 'traffic/rules.js', 'traffic/identity-reader.js', 'traffic/records-transfer.js']
         for browser, suffix in [('chrome','zip'),('edge','zip'),('firefox','xpi')]:
             with zipfile.ZipFile(RELEASE / f'Temu-data-collector-{browser}-{VERSION}.{suffix}') as archive:
                 for name in scripts:

@@ -94,6 +94,130 @@ class ProductRuleTests(unittest.TestCase):
                 self.save_rules([rule])
         self.assertEqual(self.config()["revision"], 0)
 
+    def test_platform_leaf_wins_over_identical_sizes_and_sku_keywords(self):
+        self.save_rules([self.rule("男T恤", ["M"], codeKeywords=["shirt"])])
+        self.upload([self.product(specification="M", skuCode="shirt-M", categoryId="101",
+                                   categoryName="针织毛衣", categoryPath=["服装", "针织毛衣"],
+                                   categoryIds=["1", "101"], categorySource="temu_product_catalog")])
+        row = self.state()["products"][0]
+        self.assertEqual(row["categoryName"], "针织毛衣")
+        self.assertEqual(row["categorySource"], "platform_category")
+        self.assertEqual(row["platformCategoryPath"], ["服装", "针织毛衣"])
+        self.assertEqual(self.state()["categoryCoverage"], {"matched": 1, "missing": 0, "conflicts": 0, "total": 1})
+
+    def test_platform_mapping_uses_most_specific_ancestor_and_exact_path(self):
+        self.save_rules([self.rule("衣服", [], specifications=[], platformCategoryIds=["1"]),
+                         self.rule("男T恤", [], specifications=[], platformCategoryIds=["101"])])
+        self.upload([self.product(categoryId="101", categoryName="男士上衣",
+                                   categoryPath=["服装", "男装", "男士上衣"], categoryIds=["1", "10", "101"])])
+        self.assertEqual(self.state()["products"][0]["categoryName"], "男T恤")
+        self.save_rules([self.rule("男T恤", [], specifications=[],
+                                  platformCategoryNames=["服装>男装 > 男士上衣"])])
+        row = self.state()["products"][0]
+        self.assertEqual(row["categoryName"], "男T恤")
+        self.assertEqual(row["categorySource"], "platform_category_rule")
+        # Same size and similar name do not qualify as an exact taxonomy map.
+        self.upload([self.product(categoryId="102", categoryName="男士毛衣", specification="M",
+                                   categoryPath=["服装", "男装", "男士毛衣"])])
+        self.assertEqual(self.state()["products"][0]["categoryName"], "男士毛衣")
+
+    def test_platform_conflicts_and_normalizer_conflict_marker_never_fall_back(self):
+        self.upload([self.product(categoryId="101", categoryName="毛毯", skuCode="blanket"),
+                     self.product(sku="300002", categoryId="102", categoryName="地垫", skuCode="blanket")])
+        row = self.state()["products"][0]
+        self.assertEqual(row["categoryName"], "未分类")
+        self.assertEqual(row["categorySource"], "platform_conflict")
+        self.assertEqual(self.state()["counts"]["platformCategoryConflicts"], 1)
+        self.upload([self.product(categorySource="temu_product_catalog_conflict", skuCode="blanket")])
+        self.assertEqual(self.state()["products"][0]["categorySource"], "platform_conflict")
+
+    def test_manual_override_keeps_original_taxonomy_and_conflicting_maps_stay_unknown(self):
+        self.save_rules([self.rule("毛毯", [], specifications=[], platformCategoryIds=["101"]),
+                         self.rule("家纺", [], specifications=[], platformCategoryIds=["101"])])
+        self.upload([self.product(categoryId="101", categoryName="盖毯")])
+        self.assertEqual(self.state()["products"][0]["categoryName"], "未分类")
+        product_rules.save({"mall_id": "123", "action": "product", "revision": 1,
+                            "spuId": "100001", "category": "毛毯", "specifications": {}}, self.connect)
+        row = self.state()["products"][0]
+        self.assertEqual(row["categoryName"], "毛毯")
+        self.assertEqual(row["categorySource"], "local_maintenance")
+        self.assertEqual(row["platformCategoryName"], "盖毯")
+
+    def test_platform_fields_are_validated_and_leaf_ids_survive_richer_name_path(self):
+        with self.assertRaisesRegex(ValueError, "类目"):
+            self.upload([self.product(categoryPath="服装>男装")])
+        with self.assertRaisesRegex(ValueError, "类目"):
+            self.save_rules([self.rule(platformCategoryIds=["not-an-id"])])
+        self.upload([self.product(categoryName="上衣", categoryPath=["服装", "上衣"]),
+                     self.product(sku="300002", categoryId="101", categoryName="上衣", categoryIds=["1", "101"])])
+        row = self.state()["products"][0]
+        self.assertEqual(row["platformCategoryPath"], ["服装", "上衣"])
+        self.assertEqual(row["platformCategoryIds"], ["1", "101"])
+
+    def test_platform_mapping_is_shop_local_and_explicit_mapping_wins_default_leaf_name(self):
+        self.save_rules([self.rule("家纺", [], specifications=[], platformCategoryIds=["1"])])
+        fields = {"categoryId": "101", "categoryName": "毛毯", "categoryIds": ["1", "101"],
+                  "categoryPath": ["家居", "毛毯"], "categorySource": "temu_product_catalog"}
+        self.upload([self.product(**fields)])
+        self.upload([self.product(**fields)], mall="999")
+        self.assertEqual(self.state()["products"][0]["categoryName"], "家纺")
+        self.assertEqual(self.state("999")["products"][0]["categoryName"], "毛毯")
+        self.assertEqual(self.state("999")["products"][0]["categorySource"], "platform_category")
+
+    def test_leaf_id_and_leaf_name_mapping_have_equal_specificity_with_shorter_paths(self):
+        self.save_rules([self.rule("衣服", [], specifications=[], platformCategoryIds=["1"]),
+                         self.rule("男T恤", [], specifications=[], platformCategoryNames=["上衣"])])
+        self.upload([self.product(categoryId="101", categoryName="上衣", categoryIds=["1", "10", "101"])])
+        self.assertEqual(self.state()["products"][0]["categoryName"], "男T恤")
+        self.save_rules([self.rule("衣服", [], specifications=[], platformCategoryNames=["服装"]),
+                         self.rule("男T恤", [], specifications=[], platformCategoryIds=["101"])])
+        self.upload([self.product(categoryId="101", categoryName="上衣", categoryPath=["服装", "男装", "上衣"])])
+        self.assertEqual(self.state()["products"][0]["categoryName"], "男T恤")
+
+    def test_partial_paths_without_explicit_leaf_are_not_promoted_to_ancestors(self):
+        for fields in [
+            {"categoryId": "300", "categoryName": "", "categoryIds": ["1", "2", "300"],
+             "categoryPath": ["服装", "男装"]},
+            {"categoryId": "", "categoryName": "T恤", "categoryIds": ["1", "2"],
+             "categoryPath": ["服装", "男装", "T恤"]},
+            {"categoryId": "", "categoryName": "", "categoryIds": ["1", "2"],
+             "categoryPath": ["服装", "男装"]},
+        ]:
+            self.upload([self.product(skuCode="shirt-M", **fields)])
+            row = self.state()["products"][0]
+            self.assertEqual(row["categorySource"], "platform_conflict")
+            self.assertEqual(row["categoryName"], "未分类")
+            self.assertNotIn(row["platformCategoryName"], ["服装", "男装"])
+            self.assertNotIn(row["platformCategoryId"], ["1", "2"])
+
+    def test_continuous_leaf_suffix_remains_usable_when_ancestors_have_no_id_or_name(self):
+        self.upload([self.product(categoryId="300", categoryName="T恤", categoryIds=["300"],
+                                   categoryPath=["男装", "T恤"])])
+        row = self.state()["products"][0]
+        self.assertEqual(row["categorySource"], "platform_category")
+        self.assertEqual(row["platformCategoryId"], "300")
+        self.assertEqual(row["platformCategoryName"], "T恤")
+        self.assertEqual(row["platformCategoryIds"], ["300"])
+        self.assertEqual(row["platformCategoryPath"], ["男装", "T恤"])
+
+    def test_missing_leaf_name_keeps_ids_without_borrowing_ancestor_name(self):
+        self.upload([self.product(categoryId="300", categoryName="", categoryIds=["1", "300"],
+                                   categoryPath=[])])
+        row = self.state()["products"][0]
+        self.assertFalse(row["platformCategoryConflict"])
+        self.assertEqual(row["platformCategoryId"], "300")
+        self.assertEqual(row["platformCategoryName"], "")
+        self.assertEqual(row["categoryName"], "未分类")
+
+    def test_missing_leaf_id_keeps_names_without_borrowing_ancestor_id(self):
+        self.upload([self.product(categoryId="", categoryName="T恤", categoryIds=[],
+                                   categoryPath=["服装", "T恤"])])
+        row = self.state()["products"][0]
+        self.assertFalse(row["platformCategoryConflict"])
+        self.assertEqual(row["platformCategoryId"], "")
+        self.assertEqual(row["platformCategoryName"], "T恤")
+        self.assertEqual(row["categoryName"], "T恤")
+
 
 if __name__ == "__main__":
     unittest.main()

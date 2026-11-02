@@ -28,6 +28,7 @@ ROOT_FILES = {
     '使用说明.md','同事使用指南.txt','检查运行环境.cmd','diagnose_workbench.py','版本信息.json','SHA256SUMS.txt',
 }
 ROOT_FILES.update({'workbench-components.json','delta_update_workbench.py'})
+ROOT_FILES.update({'从GitHub安装更新.cmd','maintenance/github_workbench_update.ps1'})
 ROOT_DIRS = {'runtime','web-dist','browser_extension','gpt_chrome_extension','source','local_tools','image_presets'}
 PRIVATE_PARTS = {'data','state','logs','__pycache__','.git','.migration','.openai'}
 

@@ -1,7 +1,7 @@
 (function () {
   'use strict';
-  if (globalThis.__temuTrafficAssistant?.version === '1.0.6') { globalThis.__temuTrafficAssistant.show(); return; }
-  if (globalThis.__temuTrafficAssistant?.state.running) return;
+  if (globalThis.__temuTrafficAssistant?.version === '1.0.7') { globalThis.__temuTrafficAssistant.show(); return; }
+  if (globalThis.__temuTrafficAssistant?.state.running || globalThis.__temuTrafficAssistant?.state.starting) return;
   document.querySelectorAll('[data-traffic-assistant]').forEach(el => el.remove());
   const R = globalThis.TrafficRules, D = globalThis.TrafficDOM;
   if (!D.allowedPage()) return;
@@ -16,7 +16,7 @@
       :host([data-operating="true"]){left:16px;right:auto;top:74px}.miniBar{display:none;align-items:center;gap:5px;max-width:390px}.collapsed .miniBar{display:flex}.miniActions{display:flex;gap:4px}.miniActions button{background:#f7faf8;padding:9px 10px;white-space:nowrap}.miniBar .mini{font-size:12px;padding:10px 12px}
     </style>
     <div id="wrap"><div class="miniBar"><button class="mini" id="expand">↗ 流量加速助手</button><div class="miniActions hidden" id="miniActions"><button id="miniPause">暂停</button><button class="danger" id="miniStop">停止</button></div></div><div class="panel">
-      <div class="header"><div class="logo">↗</div><div><div class="name">流量加速助手</div><div class="sub">TEMU · 美国站 · v1.0.6</div></div><div class="tools"><button id="collapse" title="收起">—</button><button id="hide" title="隐藏面板">×</button></div></div>
+      <div class="header"><div class="logo">↗</div><div><div class="name">流量加速助手</div><div class="sub">TEMU · 美国站 · v1.0.7</div></div><div class="tools"><button id="collapse" title="收起">—</button><button id="hide" title="隐藏面板">×</button></div></div>
       <div id="progress" class="progress"></div><div class="body">
         <span class="badge">持续14天 · 固定价格</span><p class="intro">同时满足类目、活动标签和开启机会才处理。将从第1页扫描至末页，先逐项校验全部规格，再提交加速。</p>
         <fieldset id="settings" style="border:0;padding:0;margin:0"><label class="label" for="categories">匹配类目（每行一个，满足任意一个）</label><textarea id="categories"></textarea><div class="hint">可填完整类目路径，或完整末级类目；不使用模糊匹配。</div>
@@ -292,6 +292,8 @@
       log('已扫描至最后一页');
     } catch (error) {
       if (error.partial) state.coverage = error.partial.pages;
+      if (state.running) state.lastError = {...(state.lastError || {}), step:state.step || '准备扫描',
+        message:error.message, ...(error.trafficStage ? {trafficStage:error.trafficStage} : {}),time:new Date().toISOString()};
       if (state.running) { setStatus(state.stop ? '已停止 · ' + (state.committed ? '请核对最后提交的结果' : '记录已保留') : '任务已停止 · ' + error.message); log(error.message, 'failed'); }
       else $('errors').textContent = error.message;
     } finally {
@@ -360,7 +362,7 @@
     download('temu-加速结果-' + stamp() + '.csv', '\uFEFF' + rows.map(row => row.map(csvCell).join(',')).join('\r\n'), 'text/csv;charset=utf-8');
   };
   $('diagnose').onclick = () => { try { download('temu-页面诊断-' + stamp() + '.json', JSON.stringify({...D.diagnostics(), run:{step:state.step, lastError:state.lastError, scanScope:state.scanScope, coverage:state.coverage, counts:state.counts, status:$('status').textContent}}, null, 2), 'application/json'); } catch (e) { $('errors').textContent = e.message; } };
-  globalThis.__temuTrafficAssistant = {version:'1.0.6', show() { host.style.display = ''; $('wrap').classList.remove('collapsed'); }, state};
+  globalThis.__temuTrafficAssistant = {version:'1.0.7', show() { host.style.display = ''; $('wrap').classList.remove('collapsed'); }, state};
   populate(R.defaults);
   $('start').disabled = true; $('scan').disabled = true;
   chrome.storage.local.get(['trafficConfig', 'trafficLastRun', 'trafficConfirmedSuccess']).then(async data => {
