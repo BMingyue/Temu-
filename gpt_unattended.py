@@ -205,8 +205,14 @@ def recover_selected(data, ids, browsers):
         if not f.is_workflow(job) or job.get('batch_phase') not in ('needs_review', 'paused') or f.current(job)['phase'] != 'ready':
             protected.append(ident)
             continue
-        job['handoff_browsers'] = b.normalize_browsers(browsers) or pool(job)
         step = f.current(job)
+        # A stale/inconsistent ready flag cannot erase an observed send. Only
+        # the exact current step matters: job-level sent_at may describe an
+        # earlier image that has already been saved.
+        if any(step.get(key) for key in ('send_started_at', 'sent_at', 'user_message_id')):
+            protected.append(ident)
+            continue
+        job['handoff_browsers'] = b.normalize_browsers(browsers) or pool(job)
         if step['number'] > 1 and not b._saved(job['steps'][0]):
             protected.append(ident)
             continue

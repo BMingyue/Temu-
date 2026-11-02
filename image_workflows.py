@@ -561,6 +561,8 @@ def update(job, body, data):
         message = str(body.get('message') or '本步骤需要人工核对，保留原对话与图片')[:500]
         import gpt_unattended
         reason = 'workflow_page_not_ready' if body.get('code') == 'workflow_page_not_ready' else 'task_stalled'
+        if step['phase'] == 'ready' and body.get('code') == 'workflow_attachment_not_ready':
+            reason = 'workflow_attachment_not_ready'
         gpt_unattended.isolate(data, job, message, reason)
         return {'ok': True, 'job_status': job['status'], 'task_isolated': True}
     number = int(body.get('step', 0))

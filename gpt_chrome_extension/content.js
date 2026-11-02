@@ -4,6 +4,8 @@
  const BUILD=VERSION;
  const USER_SELECTOR='[data-message-author-role="user"],[class~="group/user-message"]';
  const ASSISTANT_SELECTOR='[data-message-author-role="assistant"],[class~="group/assistant-message"],[class~="group/agent-message"],[class~="group/generated-image-preview"]';
+ const DIALOG_SELECTOR='dialog,[role="dialog"],[role="alertdialog"]';
+ const ATTACHMENT_EXCLUDED=USER_SELECTOR+','+ASSISTANT_SELECTOR+','+DIALOG_SELECTOR;
  function messageTurns(selector,root=document,includeUnrendered=false){
   const nodes=[...root.querySelectorAll(selector)].filter(el=>includeUnrendered||!el.getClientRects||visible(el));
   return nodes.filter(el=>!nodes.some(other=>other!==el&&el.contains?.(other)));
@@ -17,39 +19,56 @@
  function button(names){return [...document.querySelectorAll('button')].find(el=>visible(el)&&names.some(name=>label(el).toLowerCase()===name.toLowerCase()))}
  function uploadControl(){
   const names=['添加文件等内容','添加文件等','添加照片和文件','添加照片/文件','添加文件','添加附件','上传文件','Add files','Attach files','Upload files','Add photos and files','Upload from computer'];
-  const controls=[...document.querySelectorAll('button,[role="menuitem"]')].filter(visible);
+  const box=typeof document.querySelector==='function'?composer():null,scope=box?attachmentScope():null;
+  if(typeof document.querySelector==='function'&&!box)return null;
+  const controls=[...document.querySelectorAll('button,[role="menuitem"]')].filter(element=>visible(element)&&!element.closest?.(ATTACHMENT_EXCLUDED)&&(!scope||scope.contains(element)));
   const named=controls.find(el=>names.some(name=>label(el).toLowerCase()===name.toLowerCase()))||controls.find(el=>names.some(name=>label(el).toLowerCase().startsWith(name.toLowerCase())));
   if(named)return named;
   const form=composer()?.closest('form');if(!form)return null;
-  return [...form.querySelectorAll('button,[role="button"]')].filter(visible).find(el=>{
+  return [...form.querySelectorAll('button,[role="button"]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)).find(el=>{
    const hint=[label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ');
    return /^(?:\+|添加|add)$/i.test(hint)||/composer.*(?:plus|attach|upload)|(?:plus|attach|upload).*composer/i.test(hint);
   })||null;
  }
- function uploadInput(localOnly=false){
-  const inputs=[...document.querySelectorAll('input[type="file"]')].filter(el=>!el.disabled);
-  const scope=attachmentScope(),local=inputs.find(el=>scope?.contains(el));if(localOnly)return local||null;
-  return local
-   ||inputs.find(el=>el.multiple&&(!el.accept||/zip|\*/i.test(el.accept)))
-   ||inputs.find(el=>!el.accept)
-   ||inputs[0]||null;
+ function uploadMenu(control,beforeVisible){
+  const scope=attachmentScope(),owned=(control.getAttribute('aria-controls')||'').split(/\s+/).map(id=>document.getElementById(id)).filter(Boolean);
+  const candidates=[...document.querySelectorAll('[role="menuitem"],button')].filter(element=>element!==control&&visible(element)&&!element.closest(ATTACHMENT_EXCLUDED)&&/^(?:上传文件|从电脑上传|从计算机上传|选择文件|上传照片和文件|upload from computer|upload files|add files|choose files)(?:\b|\s|$)/i.test(label(element))&&(scope?.contains(element)||!beforeVisible.has(element)||owned.some(menu=>menu.contains(element))));
+  return candidates.length===1?candidates[0]:null;
+ }
+ function uploadInput(localOnly=false,task=null,preferredInputs=null){
+  const scope=attachmentScope(),form=composer()?.closest('form'),items=task?attachmentItems(task):[];
+  const local=input=>Boolean(scope?.contains(input)||form&&input.form===form);
+  const accepted=(input,item)=>{
+   const accept=String(input.accept||'').toLowerCase().split(',').map(value=>value.trim()).filter(Boolean);
+   if(!accept.length)return true;
+   const extension='.'+String(item.name||'').split('.').pop().toLowerCase();
+   const fallback={'.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.gif':'image/gif','.zip':'application/zip'};
+   const type=String(item.type||fallback[extension]||'').toLowerCase();
+   return accept.some(value=>value==='*'||value==='*/*'||value===extension||value===type||value.endsWith('/*')&&type.startsWith(value.slice(0,-1)));
+  };
+  const inputs=[...document.querySelectorAll('input[type="file"]')].filter(input=>!input.disabled&&input.isConnected!==false&&!input.webkitdirectory&&!input.hasAttribute?.('capture')&&!input.closest?.(ATTACHMENT_EXCLUDED)&&(!localOnly||local(input))&&(!task||local(input)||preferredInputs?.has(input))&&items.every(item=>accepted(input,item)));
+  const ranked=inputs.map(input=>({input,score:(local(input)?100:0)+(preferredInputs?.has(input)?1000:0)+(String(input.accept||'').trim()?10:0)+(input.multiple?1:0)})).sort((a,b)=>b.score-a.score);
+  // A stale generic input can remain mounted next to the actual image picker.
+  // Prefer a compatible typed/current composer input, and never guess when
+  // two indistinguishable controls remain after opening the upload menu.
+  return ranked.length&&(!ranked[1]||ranked[0].score>ranked[1].score)?ranked[0].input:null;
  }
  function uploadDiagnostic(){
-  const form=composer()?.closest('form');
-  const hints=[...(form||document).querySelectorAll('button,[role="button"]')].filter(visible).slice(0,16).map(el=>
+  const scope=attachmentScope();if(!scope)return '未识别 GPT 输入框；关联文件输入框：无';
+  const hints=[...scope.querySelectorAll('button,[role="button"]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)).slice(0,16).map(el=>
    [el.getAttribute('aria-label'),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join('|').slice(0,60)).filter(Boolean);
-  const inputs=[...document.querySelectorAll('input[type="file"]')].map(el=>`${el.multiple?'多选':'单选'}:${(el.accept||'任意').slice(0,40)}`);
+  const inputs=[...scope.querySelectorAll('input[type="file"]')].filter(el=>!el.closest(ATTACHMENT_EXCLUDED)).map(el=>`${el.multiple?'多选':'单选'}:${(el.accept||'任意').slice(0,40)}`);
   return `可见按钮标记：${hints.join('、')||'无'}；文件输入框：${inputs.join('、')||'无'}`;
  }
  function composer(){
   const primary=document.querySelector('#prompt-textarea');
-  if(primary&&visible(primary)&&!primary.closest('[role="dialog"]')&&(primary.isContentEditable||primary.tagName==='TEXTAREA'))return primary;
+  if(primary&&visible(primary)&&!primary.closest(DIALOG_SELECTOR)&&(primary.isContentEditable||primary.tagName==='TEXTAREA'))return primary;
   const candidates=[...document.querySelectorAll('[contenteditable="true"],textarea,[data-testid="textbox"]')];
   return candidates.find(el=>{
-   if(!visible(el)||el.closest('[role="dialog"]'))return false;
+   if(!visible(el)||el.closest(DIALOG_SELECTOR))return false;
    const hint=[el.getAttribute('aria-label'),el.getAttribute('placeholder'),el.getAttribute('data-testid')].filter(Boolean).join(' ');
    return /与 ChatGPT 聊天|message chatgpt|ask anything|发送消息|message|prompt|textbox|聊天/i.test(hint)||el.matches('[contenteditable="true"][data-lexical-editor="true"]');
-  })||candidates.find(el=>visible(el)&&!el.closest('[role="dialog"]'))||null;
+  })||candidates.find(el=>visible(el)&&!el.closest(DIALOG_SELECTOR))||null;
  }
  function loginPromptVisible(){return [...document.querySelectorAll('button,a,[role="button"]')].some(el=>{
   if(!visible(el))return false;
@@ -145,16 +164,36 @@
   return String(text||'').split(/\r?\n/).some(value=>expected.test(value.trim().replace(/^(?:(?:remove|delete|preview|download|file|image|attachment|移除|删除|预览|下载|文件|图片|附件)[\s:：]+){1,3}/i,'').replace(/\s+(?:[·•–—]\s*)?\d+(?:\.\d+)?\s*(?:B|KB|MB|GB)\s*$/i,'')));
  }
  function attachmentText(element){
-  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[alt],[data-file-name],[data-filename]')||[])];
-  return [element.innerText||'',...nodes.flatMap(node=>['aria-label','title','alt','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].filter(Boolean).join('\n');
+  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[alt],[data-file-name],[data-filename]')||[])].filter(node=>!node.closest?.(ATTACHMENT_EXCLUDED));
+  return [attachmentLocalText(element),...nodes.flatMap(node=>['aria-label','title','alt','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].filter(Boolean).join('\n');
  }
  function primaryAttachmentNames(element){
-  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[data-file-name],[data-filename]')||[])];
-  return [element.innerText||'',...nodes.flatMap(node=>['aria-label','title','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].flatMap(value=>String(value).split(/\r?\n/)).filter(value=>/\.[a-z][a-z0-9]{0,11}(?:\b|$)/i.test(value));
+  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[data-file-name],[data-filename]')||[])].filter(node=>!node.closest?.(ATTACHMENT_EXCLUDED));
+  return [attachmentLocalText(element),...nodes.flatMap(node=>['aria-label','title','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].flatMap(value=>String(value).split(/\r?\n/)).filter(value=>/\.[a-z][a-z0-9]{0,11}(?:\b|$)/i.test(value));
+ }
+ function attachmentLocalText(element){
+  if(!element||element.closest?.(ATTACHMENT_EXCLUDED))return '';
+  if(!element.cloneNode||!element.querySelector?.(ATTACHMENT_EXCLUDED))return element.innerText||element.textContent||'';
+  const clone=element.cloneNode(true);clone.querySelectorAll(ATTACHMENT_EXCLUDED).forEach(node=>node.remove());
+  clone.querySelectorAll('div,p,li,section,article,button,br').forEach(node=>{node.before('\n');node.after('\n')});
+  return clone.textContent||'';
+ }
+ function attachmentSourceIdentity(source){
+  try{
+   const url=new URL(source);
+   if(!/^https?:$/.test(url.protocol))return source;
+   const azure=['sv','sig','se','sp','sr'].every(key=>url.searchParams.has(key));
+   const aws=url.searchParams.get('X-Amz-Algorithm')==='AWS4-HMAC-SHA256'&&['X-Amz-Credential','X-Amz-Signature','X-Amz-Expires'].every(key=>url.searchParams.has(key));
+   if(!azure&&!aws)return source;
+   for(const key of [...url.searchParams.keys()]){
+    if(azure&&/^(?:sig|se|st|sv|sr|sp|skoid|sktid|skt|ske|sks|skv|rsct|rscd)$/i.test(key)||aws&&/^x-amz-(?:signature|credential|date|expires|security-token|signedheaders)$/i.test(key))url.searchParams.delete(key);
+   }
+   url.searchParams.sort();return url.href;
+  }catch{return source}
  }
  function composerAttachmentSnapshot(scope=attachmentScope()){
   if(!scope)return {cards:[],rawImages:0,rawMarkers:0,imageCount:0};
-  const local=element=>visible(element)&&!element.closest?.(USER_SELECTOR+','+ASSISTANT_SELECTOR);
+  const local=element=>visible(element)&&!element.closest?.(ATTACHMENT_EXCLUDED);
   const rawMarked=[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(visible),marked=rawMarked.filter(local);
   // One file can expose both test ids, and one outer group can contain several
   // files. Collapse single-file ancestor chains, never multi-file groups.
@@ -185,8 +224,9 @@
  function workflowAttachmentEvidence(task,state){
   const references=referenceItems(task),expectedImages=references.length,requiredImages=task.workflow_input_mode==='single_source_edit'?1:2;
   const receipt=selectedAttachments,scope=attachmentScope();
-  const receiptValid=Boolean(receipt&&receipt.key===attachmentKey(task)&&receipt.scope===scope&&receipt.emptyBeforeSelection&&receipt.names.length===expectedImages&&receipt.names.every((name,index)=>name===uploadName(task,references[index]))&&Date.now()-receipt.at<600000);
-  const assigned=new Set(),reasons=[],unnamed=[];let namedImages=0,confirmedImages=0;
+  const box=composer(),sameComposer=Boolean(receipt&&(receipt.scope===scope||receipt.form&&receipt.form===box?.closest('form')&&scope?.contains(receipt.form)));
+  const receiptValid=Boolean(receipt&&receipt.key===attachmentKey(task)&&sameComposer&&receipt.emptyBeforeSelection&&receipt.names.length===expectedImages&&receipt.names.every((name,index)=>name===uploadName(task,references[index]))&&Date.now()-receipt.at<600000);
+  const assigned=new Set(),reasons=[],unnamed=[],identities=[];let namedImages=0,confirmedImages=0;
   for(const card of state.cards){
    // A full filename on the file card wins over a generic/bare preview alt.
    // Otherwise a foreign job/step can masquerade as this file's basename.
@@ -194,10 +234,10 @@
    const exact=references.map((item,index)=>exactAttachmentName(card.text,uploadName(task,item))?index:-1).filter(index=>index>=0);
    const matches=foreignName?[]:exact.length?exact:references.map((item,index)=>exactAttachmentName(card.text,item.name)?index:-1).filter(index=>index>=0);
    const hasFilename=/\.[a-z][a-z0-9]{0,11}(?:\b|$)/i.test(card.text);
-   if(matches.length===1&&!assigned.has(matches[0])){assigned.add(matches[0]);namedImages++;confirmedImages++}
+   if(matches.length===1&&!assigned.has(matches[0])){assigned.add(matches[0]);namedImages++;confirmedImages++;identities.push(JSON.stringify(['name',uploadName(task,references[matches[0]]),card.sources.map(attachmentSourceIdentity).sort()]))}
    else if(matches.length>1||matches.length===1){reasons.push('附件身份重复或混合')}
    else if(hasFilename){reasons.push('存在其他文件名或其他步骤的附件')}
-   else if(receiptValid&&card.images){confirmedImages++;unnamed.push(card)}
+   else if(receiptValid&&card.images){confirmedImages++;unnamed.push(card);identities.push('preview:'+JSON.stringify(card.sources))}
    else reasons.push('附件文件身份尚未确认');
    if(!card.previewReady)reasons.push('附件预览仍未加载完成');
   }
@@ -206,7 +246,11 @@
   if(confirmedImages!==requiredImages)reasons.push('任务附件未全部对应');
   if(state.uploading)reasons.push('仍有附件正在上传');
   if(unnamed.some(card=>card.sources.some(source=>source&&state.cards.some(other=>other!==card&&other.sources.includes(source)))))reasons.push('无文件名的附件预览身份重复');
-  const fingerprint=state.cards.map(card=>[card.text,card.sources]).map(value=>JSON.stringify(value)).sort().join('|');
+  // Signed preview URLs, remove-button labels and upload decorations can be
+  // recreated while the same named file stays attached. Stability follows the
+  // verified file identities; unnamed receipt-backed cards still require the
+  // same preview sources and cannot silently exchange files.
+  const fingerprint=identities.sort().join('|');
   return {ready:reasons.length===0,count:confirmedImages,namedImages,reference:confirmedImages===requiredImages,references:confirmedImages,expectedImages,archive:false,uploading:Boolean(state.uploading),images:state.imageCount,rawImages:state.rawImages,rawThumbnails:state.rawMarkers,uniqueAttachments:state.cards.length,reasons:[...new Set(reasons)],fingerprint};
  }
  function attachmentEvidence(task,{searchable,imageCount,thumbnailCount,uploading,cards,rawImages,rawMarkers}){
@@ -225,18 +269,32 @@
  }
  function attachmentScope(){
   const box=composer();if(!box)return null;
-  return box.closest('form')||box.parentElement?.parentElement?.parentElement||box.parentElement||document;
+  const form=box.closest('form'),base=form||box.parentElement;
+  if(!base)return null;
+  let scope=base;
+  // The attachment tray may be a sibling of the form rather than its child.
+  // Stay inside the nearest small composer wrapper; never expand through chat
+  // turns, another editor, dialogs or page-level containers to count images.
+  for(let parent=base.parentElement,depth=0;parent&&depth<3;parent=parent.parentElement,depth++){
+   if(parent.matches('body,main,html,[role="main"],'+DIALOG_SELECTOR)||parent.querySelector(USER_SELECTOR+','+ASSISTANT_SELECTOR))break;
+   const editors=[...parent.querySelectorAll('#prompt-textarea,[contenteditable="true"],textarea')].filter(editor=>visible(editor)&&!editor.closest(ATTACHMENT_EXCLUDED));
+   if(editors.some(editor=>editor!==box&&!box.contains(editor)&&!editor.contains(box)))break;
+   const outside=[...parent.querySelectorAll(ATTACHMENT_SELECTOR)].some(node=>!scope.contains(node)&&!node.closest(ATTACHMENT_EXCLUDED));
+   const uploader=[...parent.querySelectorAll('button,[role="button"]')].some(node=>!scope.contains(node)&&visible(node)&&!node.closest(ATTACHMENT_EXCLUDED)&&/^(?:添加文件等内容|添加文件等|添加照片和文件|添加照片\/文件|添加文件|添加附件|上传文件|add files|attach files|upload files|add photos and files|upload from computer)$/i.test(label(node)));
+   if(outside||uploader)scope=parent;
+  }
+  return scope;
  }
  function attachmentPresence(){
   const scope=attachmentScope();if(!scope)return false;
-  return composerAttachmentSnapshot(scope).cards.length>0||/\.zip(?:\b|$)/i.test(scope.innerText||'');
+  return composerAttachmentSnapshot(scope).cards.length>0||/\.zip(?:\b|$)/i.test(attachmentLocalText(scope));
  }
  function attachmentState(task){
   const scope=attachmentScope();if(!scope)return {ready:false,count:0};
-  const elements=[scope,...scope.querySelectorAll('[aria-label],[title]')].filter(visible);
-  const searchable=[scope.innerText,...elements.map(el=>[el.getAttribute?.('aria-label'),el.getAttribute?.('title')].filter(Boolean).join(' '))].join('\n');
+  const elements=[scope,...scope.querySelectorAll('[aria-label],[title]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED));
+  const searchable=[attachmentLocalText(scope),...elements.map(el=>[el.getAttribute?.('aria-label'),el.getAttribute?.('title')].filter(Boolean).join(' '))].join('\n');
   const snapshot=composerAttachmentSnapshot(scope);
-  const uploading=[...scope.querySelectorAll('[role="progressbar"],[data-testid*="uploading"],[aria-label*="上传中"],[aria-label*="Uploading"],[aria-busy="true"]')].some(visible);
+  const uploading=[...scope.querySelectorAll('[role="progressbar"],[data-testid*="uploading"],[aria-label*="上传中"],[aria-label*="Uploading"],[aria-busy="true"]')].some(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED));
   return attachmentEvidence(task,{searchable,imageCount:snapshot.imageCount,thumbnailCount:snapshot.cards.length,uploading,...snapshot});
  }
  function ownedComposer(task){
@@ -254,7 +312,7 @@
   }
   for(let attempt=0;attempt<4&&attachmentPresence();attempt++){
    const scope=attachmentScope();
-   const remove=[...scope.querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
+   const remove=[...scope.querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
    if(!remove)break;
    remove.click();await sleep(500);
   }
@@ -266,7 +324,7 @@
   // still visible and no upload indicator on the final observation.
   const expected=attachmentItems(task).length;
   let stable={firstReadyAt:null,positiveCount:0,fingerprint:''},last={};try{return await waitFor(()=>{last=attachmentState(task);stable=attachmentStability(stable,last,Date.now());return stable.ready?last:null},timeout,expected+' 个附件未在发送框中稳定挂载，已停止发送')}
-  catch{throw Error(`${expected} 个附件未在发送框中稳定挂载，已停止发送（图片 ${last.references||0}/${last.expectedImages||referenceItems(task).length}${workflowTask(task)?'、唯一附件 '+(last.uniqueAttachments??'未知')+'、原始图片 '+(last.rawImages??'未知')+'、原始标记 '+(last.rawThumbnails??'未知')+'、原因 '+(last.reasons?.join('；')||'连续稳定时间不足'):'、ZIP 确认 '+Boolean(last.archive)}、上传中 ${Boolean(last.uploading)}）`)}
+  catch{throw attachmentFailure(task,`${expected} 个附件未在发送框中稳定挂载，已停止发送（图片 ${last.references||0}/${last.expectedImages||referenceItems(task).length}${workflowTask(task)?'、唯一附件 '+(last.uniqueAttachments??'未知')+'、原始图片 '+(last.rawImages??'未知')+'、原始标记 '+(last.rawThumbnails??'未知')+'、原因 '+(last.reasons?.join('；')||'连续稳定时间不足'):'、ZIP 确认 '+Boolean(last.archive)}、上传中 ${Boolean(last.uploading)}；${uploadDiagnostic()}）`)}
  }
  function attachmentStability(previous,state,at){
   if(!state.ready)return {firstReadyAt:null,positiveCount:0,fingerprint:'',ready:false};
@@ -275,38 +333,46 @@
   const firstReadyAt=same?previous.firstReadyAt:at,positiveCount=same?previous.positiveCount+1:1;
   return {firstReadyAt,positiveCount,fingerprint,ready:positiveCount>=2&&at-firstReadyAt>=2000};
  }
+ function attachmentFailure(task,message){
+  const error=Error(message);
+  if(workflowTask(task)&&task.step_phase==='ready')error.code='workflow_attachment_not_ready';
+  return error;
+ }
  async function attach(task){
   // ChatGPT has used several labels for the same composer upload control.
   // Keep exact-label matching, but cover the current Chinese UI as well as
   // the English variants so a UI copy change cannot strand unsent jobs.
-  let input=uploadInput(true);
+  let input=uploadInput(true,task);
   if(!input){
-   const control=await waitFor(uploadControl,20000,'找不到添加文件按钮').catch(()=>{throw Error('找不到添加文件按钮（'+uploadDiagnostic()+'）')});
+   const control=await waitFor(uploadControl,20000,'找不到添加文件按钮').catch(()=>{throw attachmentFailure(task,'找不到添加文件按钮（'+uploadDiagnostic()+'）')});
+   const beforeInputs=new Set(document.querySelectorAll('input[type="file"]'));
+   const beforeVisible=new Set([...document.querySelectorAll('[role="menuitem"],button')].filter(visible));
    control.click();
    // Some ChatGPT builds expose the file input immediately; others insert it
    // only after the upload menu item is selected. Prefer the direct input so
    // a delayed menu cannot strand the task.
-   input=await waitFor(uploadInput,1500,'').catch(()=>null);
+   const currentInput=()=>uploadInput(false,task,new Set([...document.querySelectorAll('input[type="file"]')].filter(candidate=>!beforeInputs.has(candidate))));
+   input=await waitFor(currentInput,1500,'').catch(()=>null);
    if(!input){
     await sleep(300);
-    const menu=[...document.querySelectorAll('[role="menuitem"],button')].filter(visible).find(el=>el!==control&&/上传文件|从电脑上传|从计算机上传|选择文件|上传照片和文件|upload from computer|upload files|add files|choose files/i.test(label(el)));
+    const menu=uploadMenu(control,beforeVisible);
     if(menu)menu.click();
-    input=await waitFor(uploadInput,10000,'找不到 GPT 文件输入框');
+    input=await waitFor(currentInput,10000,'找不到唯一可接收本步附件的 GPT 文件输入框（'+uploadDiagnostic()+'）').catch(error=>{throw attachmentFailure(task,error.message)});
    }
   }
   const items=attachmentItems(task),files=items.map(item=>file(item,uploadName(task,item)));
   const scope=attachmentScope(),before=composerAttachmentSnapshot(scope);
-  const hiddenOrVisibleMarkers=scope?[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(node=>!node.closest?.(USER_SELECTOR+','+ASSISTANT_SELECTOR)):[];
-  const selection={key:attachmentKey(task),scope,names:files.map(item=>item.name),emptyBeforeSelection:before.cards.length===0&&hiddenOrVisibleMarkers.length===0,at:Date.now()};
+  const hiddenOrVisibleMarkers=scope?[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(node=>!node.closest?.(ATTACHMENT_EXCLUDED)):[];
+  const selection={key:attachmentKey(task),scope,form:composer()?.closest('form'),names:files.map(item=>item.name),emptyBeforeSelection:before.cards.length===0&&hiddenOrVisibleMarkers.length===0,at:Date.now()};
   selectedAttachments=null;
   if(input.multiple){
-   selectFiles(input,files);
+   try{selectFiles(input,files)}catch(error){throw attachmentFailure(task,error.message)}
   }else{
    for(let index=0;index<files.length;index++){
     const item=files[index];
-    const target=input.isConnected?input:uploadInput();
-    if(!target)throw Error('选择第 '+(index+1)+'/'+files.length+' 个附件时找不到 GPT 文件框');
-    selectFiles(target,[item]);
+    const target=input.isConnected?input:uploadInput(false,task);
+    if(!target)throw attachmentFailure(task,'选择第 '+(index+1)+'/'+files.length+' 个附件时找不到 GPT 文件框');
+    try{selectFiles(target,[item])}catch(error){throw attachmentFailure(task,error.message)}
     await sleep(750);
    }
   }
@@ -716,7 +782,7 @@
   if((text||attachmentPresence())&&owned){
    const box=composer();if(text&&box)clearComposerText(box);
    for(let count=0;count<8&&attachmentPresence();count++){
-    const remove=[...attachmentScope().querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
+    const remove=[...attachmentScope().querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
     if(!remove)break;remove.click();await sleep(300);
    }
   }

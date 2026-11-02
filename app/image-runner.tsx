@@ -2,7 +2,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { useWorkbenchMode } from './workbench-mode';
 type Worker = {
   version?: string;
   browser: string;
@@ -63,7 +62,6 @@ function workerStatus(row?: Worker) {
   return row.status || '已连接';
 }
 export default function ImageRunner() {
-  const { professional, setMode } = useWorkbenchMode();
   const [state, setState] = useState<RunnerState>({});
   const [error, setError] = useState('');
   const [launchError, setLaunchError] = useState('');
@@ -140,8 +138,8 @@ export default function ImageRunner() {
       setOpening('');
     }
   }
-  async function createBrowsers(amountOverride?: number) {
-    const amount = amountOverride ?? Number(count),
+  async function createBrowsers() {
+    const amount = Number(count),
       maximum = state.browser_creation?.max_per_request || 20;
     if (!Number.isInteger(amount) || amount < 1 || amount > maximum) {
       setLaunchError(`每次可新增 1–${maximum} 个窗口，需要更多可继续新增`);
@@ -203,10 +201,6 @@ export default function ImageRunner() {
       !profiles.some(
         (p) => p.browser === w.browser && p.worker_id === w.worker_id,
       ),
-  );
-  const connected = workers.filter((worker) => worker.online);
-  const needsAttention = connected.filter((worker) =>
-    worker.account?.blocked || worker.circuit?.open || /登录|未识别|需要处理|不匹配/.test(worker.status),
   );
   function profileCard(profile: BrowserProfile) {
     const row = workers.find(
@@ -289,38 +283,6 @@ export default function ImageRunner() {
       </article>
     );
   }
-  if (!professional) return (
-    <section className="panel" aria-label="生图浏览器管理">
-      <div className="sectionhead">
-        <div>
-          <h2>生图浏览器</h2>
-          <p>{connected.length ? `${connected.length} 个已连接，任务按队列自动运行。` : '打开生图浏览器并登录 GPT，连接后即可生成。'}</p>
-        </div>
-        <div className="buttons">
-          {chrome.length ? <Button variant="outline" disabled={!!opening || !chrome.some((profile) => profile.available)}
-            onClick={() => { void openBrowser('chrome-all'); }}>
-            {opening === 'chrome-all' ? '正在打开…' : '打开生图浏览器'}
-          </Button> : legacy.length ? legacy.map((profile) => <Button key={profile.id} variant="outline"
-            disabled={!!opening || !profile.available} onClick={() => { void openBrowser(profile.id); }}>
-            {opening === profile.id ? '正在打开…' : '打开 ' + profile.label}
-          </Button>) : <Button disabled={!!opening || !state.browser_creation?.available}
-            onClick={() => { void createBrowsers(1); }}>
-            {opening === 'create' ? '正在准备…' : '准备生图浏览器'}
-          </Button>}
-          <Button variant="ghost" onClick={() => setMode('professional')}>管理浏览器</Button>
-        </div>
-      </div>
-      {!!needsAttention.length && <output className="banner warn">
-        {needsAttention.map((worker) => `${worker.profile_label || '生图浏览器'}：${workerStatus(worker)}`).join('；')}。请打开对应浏览器检查。
-      </output>}
-      {!chrome.length && !legacy.length && !state.browser_creation?.available && <p className="panelnote">
-        {state.browser_creation?.message || '正在检查本机生图环境…'}
-      </p>}
-      {launchMessage && <p style={{ overflowWrap: 'anywhere' }}><output>{launchMessage}</output></p>}
-      {launchError && <p role="alert">{launchError}</p>}
-      {error && <p role="alert">{error}</p>}
-    </section>
-  );
   return (
     <section className="panel" aria-label="生图浏览器管理">
       <div className="sectionhead">

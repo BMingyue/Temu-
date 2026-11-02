@@ -6,14 +6,14 @@ from datetime import datetime,timezone
 
 LOCK=threading.RLock()
 STATE={'last_seen':None,'page':'','status':'未连接','message':'请安装并启用浏览器生图助手'}
-EXTENSION_VERSION='0.4.9'
+EXTENSION_VERSION='0.4.10'
 # 0.3.40 tightens generated-image detection and sends richer no-image
 # diagnostics.  Older builds must not claim newly prepared tasks because they
 # can count an assistant attachment card as a generated result.
-COMPATIBLE_EXTENSION_VERSIONS=('0.3.40','0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9')
-WORKFLOW_EXTENSION_VERSIONS=('0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9')
-UNATTENDED_EXTENSION_VERSIONS=('0.4.6','0.4.7','0.4.8','0.4.9')
-SOURCE_EDIT_EXTENSION_VERSIONS=('0.4.8','0.4.9')
+COMPATIBLE_EXTENSION_VERSIONS=('0.3.40','0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9','0.4.10')
+WORKFLOW_EXTENSION_VERSIONS=('0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9','0.4.10')
+UNATTENDED_EXTENSION_VERSIONS=('0.4.6','0.4.7','0.4.8','0.4.9','0.4.10')
+SOURCE_EDIT_EXTENSION_VERSIONS=('0.4.8','0.4.9','0.4.10')
 WORKERS={}
 BROWSERS=('chrome','edge','firefox')
 PREFERENCE_ORDER=('edge','chrome','firefox')
@@ -589,7 +589,7 @@ def _generation_circuit(jobs,browser=None,worker=None):
  for job in jobs:
   if _in_scope(job,browser,worker):
    if job.get('completed_at'):terminal.append((_timestamp(job['completed_at']),True,job))
-   elif job.get('failed_at') and job.get('failure_reason') in ('response_timeout','generation_failed','presend_page_lost','workflow_page_not_ready','workflow_response_timeout'):
+   elif job.get('failed_at') and job.get('failure_reason') in ('response_timeout','generation_failed','presend_page_lost','workflow_page_not_ready','workflow_response_timeout','workflow_attachment_not_ready'):
     terminal.append((_timestamp(job['failed_at']),False,job))
   for entry in job.get('logs') or []:
    if entry.get('event')!='auto_requeue':continue
