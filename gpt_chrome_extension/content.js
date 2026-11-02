@@ -107,7 +107,14 @@
   return !composerText(box).trim();
  }
  async function waitFor(fn,timeout,message){const end=Date.now()+timeout;while(Date.now()<end){const value=fn();if(value)return value;await sleep(500)}throw Error(message)}
- function uploadName(task,item){return task.job_id.slice(0,12)+'-'+item.name.replace(/[\\/]/g,'_')}
+ function uploadName(task,item){
+  let prefix=task.job_id.slice(0,12);
+  if(workflowTask(task)){
+   const index=referenceItems(task).indexOf(item);if(index<0)throw Error('本步骤附件不属于当前任务，已停止选择文件');
+   prefix+='-s'+(task.step_number||0)+'-a'+(index+1);
+  }
+  return prefix+'-'+item.name.replace(/[\\/]/g,'_');
+ }
  function workflowTask(task){return task?.workflow_mode==='single_image_chat_v1'}
  function referenceItems(task){if(workflowTask(task))return task.attachments||[];return Array.isArray(task.reference_images)&&task.reference_images.length?task.reference_images:[task.reference]}
  function attachmentItems(task){return workflowTask(task)?task.attachments:[...referenceItems(task),task.template_archive]}
@@ -128,7 +135,82 @@
   const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
   return new RegExp(escape(name.slice(0,dot))+'(?:\\([^)]{1,64}\\))?'+escape(name.slice(dot)),'i').test(text);
  }
- function attachmentEvidence(task,{searchable,imageCount,thumbnailCount,uploading}){
+ let selectedAttachments=null;
+ const ATTACHMENT_SELECTOR='[data-testid="file-thumbnail"],[data-testid="composer-attachment"]';
+ function attachmentKey(task){return [task.job_id,task.step_token||'',task.step_number||''].join(':')}
+ function exactAttachmentName(text,name){
+  const dot=name.lastIndexOf('.');if(dot<1)return false;
+  const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const expected=new RegExp('^'+escape(name.slice(0,dot))+'(?:\\([^)]{1,64}\\))?'+escape(name.slice(dot))+'$','iu');
+  return String(text||'').split(/\r?\n/).some(value=>expected.test(value.trim().replace(/^(?:(?:remove|delete|preview|download|file|image|attachment|移除|删除|预览|下载|文件|图片|附件)[\s:：]+){1,3}/i,'').replace(/\s+(?:[·•–—]\s*)?\d+(?:\.\d+)?\s*(?:B|KB|MB|GB)\s*$/i,'')));
+ }
+ function attachmentText(element){
+  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[alt],[data-file-name],[data-filename]')||[])];
+  return [element.innerText||'',...nodes.flatMap(node=>['aria-label','title','alt','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].filter(Boolean).join('\n');
+ }
+ function primaryAttachmentNames(element){
+  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[data-file-name],[data-filename]')||[])];
+  return [element.innerText||'',...nodes.flatMap(node=>['aria-label','title','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].flatMap(value=>String(value).split(/\r?\n/)).filter(value=>/\.[a-z][a-z0-9]{0,11}(?:\b|$)/i.test(value));
+ }
+ function composerAttachmentSnapshot(scope=attachmentScope()){
+  if(!scope)return {cards:[],rawImages:0,rawMarkers:0,imageCount:0};
+  const local=element=>visible(element)&&!element.closest?.(USER_SELECTOR+','+ASSISTANT_SELECTOR);
+  const rawMarked=[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(visible),marked=rawMarked.filter(local);
+  // One file can expose both test ids, and one outer group can contain several
+  // files. Collapse single-file ancestor chains, never multi-file groups.
+  const leaves=marked.filter(node=>!marked.some(child=>child!==node&&node.contains(child)));
+  const roots=leaves.map(leaf=>{
+   const chain=marked.filter(node=>node.contains(leaf)&&leaves.filter(child=>node.contains(child)).length===1);
+   return chain.find(node=>!chain.some(parent=>parent!==node&&parent.contains(node)))||leaf;
+  });
+  const isAvatar=img=>{
+   const hint=[img.getAttribute?.('alt'),img.getAttribute?.('data-testid'),img.getAttribute?.('class')].filter(Boolean).join(' ');
+   const control=img.closest?.('button,[role="button"]');
+   return /(?:^|[\s_-])avatar(?:$|[\s_-])|头像|profile picture/i.test(hint)||/账户|账号|个人资料|account|profile/i.test([control?.getAttribute?.('aria-label'),control?.getAttribute?.('title')].filter(Boolean).join(' '));
+  };
+  const rawImages=[...scope.querySelectorAll('img')].filter(img=>{
+   if(!visible(img))return false;
+   const r=img.getBoundingClientRect();return r.width>=32&&r.height>=32&&r.width<=220&&r.height<=220;
+  });
+  const images=rawImages.filter(img=>local(img)&&!isAvatar(img));
+  // Without a file-card relationship identical URLs could also be duplicate
+  // uploaded files, so unmarked images must not be silently collapsed.
+  const extras=images.filter(img=>!roots.some(root=>root.contains(img)));
+  const cards=[...roots,...extras].map(node=>{
+   const previews=images.filter(img=>node===img||node.contains(img));
+   return {node,text:attachmentText(node),primaryNames:primaryAttachmentNames(node),images:previews.length,previewReady:previews.every(img=>img.complete!==false&&img.naturalWidth!==0),sources:[...new Set(previews.map(img=>img.currentSrc||img.src||''))].sort()};
+  });
+  return {cards,rawImages:rawImages.length,rawMarkers:rawMarked.length,imageCount:cards.filter(card=>card.images&&card.previewReady).length};
+ }
+ function workflowAttachmentEvidence(task,state){
+  const references=referenceItems(task),expectedImages=references.length,requiredImages=task.workflow_input_mode==='single_source_edit'?1:2;
+  const receipt=selectedAttachments,scope=attachmentScope();
+  const receiptValid=Boolean(receipt&&receipt.key===attachmentKey(task)&&receipt.scope===scope&&receipt.emptyBeforeSelection&&receipt.names.length===expectedImages&&receipt.names.every((name,index)=>name===uploadName(task,references[index]))&&Date.now()-receipt.at<600000);
+  const assigned=new Set(),reasons=[],unnamed=[];let namedImages=0,confirmedImages=0;
+  for(const card of state.cards){
+   // A full filename on the file card wins over a generic/bare preview alt.
+   // Otherwise a foreign job/step can masquerade as this file's basename.
+   const foreignName=card.primaryNames.some(value=>!references.some(item=>exactAttachmentName(value,uploadName(task,item))||exactAttachmentName(value,item.name)));
+   const exact=references.map((item,index)=>exactAttachmentName(card.text,uploadName(task,item))?index:-1).filter(index=>index>=0);
+   const matches=foreignName?[]:exact.length?exact:references.map((item,index)=>exactAttachmentName(card.text,item.name)?index:-1).filter(index=>index>=0);
+   const hasFilename=/\.[a-z][a-z0-9]{0,11}(?:\b|$)/i.test(card.text);
+   if(matches.length===1&&!assigned.has(matches[0])){assigned.add(matches[0]);namedImages++;confirmedImages++}
+   else if(matches.length>1||matches.length===1){reasons.push('附件身份重复或混合')}
+   else if(hasFilename){reasons.push('存在其他文件名或其他步骤的附件')}
+   else if(receiptValid&&card.images){confirmedImages++;unnamed.push(card)}
+   else reasons.push('附件文件身份尚未确认');
+   if(!card.previewReady)reasons.push('附件预览仍未加载完成');
+  }
+  if(expectedImages!==requiredImages)reasons.push('任务附件数量不符合本步骤');
+  if(state.cards.length!==requiredImages)reasons.push('实际唯一附件数量不符');
+  if(confirmedImages!==requiredImages)reasons.push('任务附件未全部对应');
+  if(state.uploading)reasons.push('仍有附件正在上传');
+  if(unnamed.some(card=>card.sources.some(source=>source&&state.cards.some(other=>other!==card&&other.sources.includes(source)))))reasons.push('无文件名的附件预览身份重复');
+  const fingerprint=state.cards.map(card=>[card.text,card.sources]).map(value=>JSON.stringify(value)).sort().join('|');
+  return {ready:reasons.length===0,count:confirmedImages,namedImages,reference:confirmedImages===requiredImages,references:confirmedImages,expectedImages,archive:false,uploading:Boolean(state.uploading),images:state.imageCount,rawImages:state.rawImages,rawThumbnails:state.rawMarkers,uniqueAttachments:state.cards.length,reasons:[...new Set(reasons)],fingerprint};
+ }
+ function attachmentEvidence(task,{searchable,imageCount,thumbnailCount,uploading,cards,rawImages,rawMarkers}){
+  if(workflowTask(task)&&Array.isArray(cards))return workflowAttachmentEvidence(task,{cards,imageCount,uploading,rawImages,rawMarkers});
   const references=referenceItems(task),expectedImages=references.length;
   const namedImages=references.filter(item=>nameVisible(searchable,uploadName(task,item))||nameVisible(searchable,item.name)).length;
   if(workflowTask(task)){
@@ -147,17 +229,15 @@
  }
  function attachmentPresence(){
   const scope=attachmentScope();if(!scope)return false;
-  const images=[...scope.querySelectorAll('img')].some(img=>{if(!visible(img))return false;const r=img.getBoundingClientRect();return r.width>=32&&r.height>=32&&r.width<=220&&r.height<=220});
-  return images||/\.zip(?:\b|$)/i.test(scope.innerText||'')||[...scope.querySelectorAll('[data-testid="file-thumbnail"],[data-testid="composer-attachment"]')].some(visible);
+  return composerAttachmentSnapshot(scope).cards.length>0||/\.zip(?:\b|$)/i.test(scope.innerText||'');
  }
  function attachmentState(task){
   const scope=attachmentScope();if(!scope)return {ready:false,count:0};
   const elements=[scope,...scope.querySelectorAll('[aria-label],[title]')].filter(visible);
   const searchable=[scope.innerText,...elements.map(el=>[el.getAttribute?.('aria-label'),el.getAttribute?.('title')].filter(Boolean).join(' '))].join('\n');
-  const images=[...scope.querySelectorAll('img')].filter(img=>{if(!visible(img))return false;const r=img.getBoundingClientRect();return r.width>=32&&r.height>=32&&r.width<=220&&r.height<=220&&img.complete!==false&&img.naturalWidth!==0});
-  const thumbnails=[...scope.querySelectorAll('[data-testid="file-thumbnail"],[data-testid="composer-attachment"]')].filter(visible);
-  const uploading=!!scope.querySelector('[role="progressbar"],[data-testid*="uploading"],[aria-label*="上传中"],[aria-label*="Uploading"]');
-  return attachmentEvidence(task,{searchable,imageCount:images.length,thumbnailCount:thumbnails.length,uploading});
+  const snapshot=composerAttachmentSnapshot(scope);
+  const uploading=[...scope.querySelectorAll('[role="progressbar"],[data-testid*="uploading"],[aria-label*="上传中"],[aria-label*="Uploading"],[aria-busy="true"]')].some(visible);
+  return attachmentEvidence(task,{searchable,imageCount:snapshot.imageCount,thumbnailCount:snapshot.cards.length,uploading,...snapshot});
  }
  function ownedComposer(task){
   const text=composerText().trim();if(text&&!draftMatches(task.prompt))return false;
@@ -185,8 +265,15 @@
   // two positive observations at least two seconds apart, with both files
   // still visible and no upload indicator on the final observation.
   const expected=attachmentItems(task).length;
-  let firstReadyAt=0,positiveCount=0,last={};try{return await waitFor(()=>{last=attachmentState(task);if(!last.ready)return null;const at=Date.now();if(!firstReadyAt)firstReadyAt=at;positiveCount++;return positiveCount>=2&&at-firstReadyAt>=2000?last:null},timeout,expected+' 个附件未在发送框中稳定挂载，已停止发送')}
-  catch{throw Error(`${expected} 个附件未在发送框中稳定挂载，已停止发送（图片 ${last.references||0}/${last.expectedImages||referenceItems(task).length}${workflowTask(task)?'':'、ZIP 确认 '+Boolean(last.archive)}、上传中 ${Boolean(last.uploading)}）`)}
+  let stable={firstReadyAt:null,positiveCount:0,fingerprint:''},last={};try{return await waitFor(()=>{last=attachmentState(task);stable=attachmentStability(stable,last,Date.now());return stable.ready?last:null},timeout,expected+' 个附件未在发送框中稳定挂载，已停止发送')}
+  catch{throw Error(`${expected} 个附件未在发送框中稳定挂载，已停止发送（图片 ${last.references||0}/${last.expectedImages||referenceItems(task).length}${workflowTask(task)?'、唯一附件 '+(last.uniqueAttachments??'未知')+'、原始图片 '+(last.rawImages??'未知')+'、原始标记 '+(last.rawThumbnails??'未知')+'、原因 '+(last.reasons?.join('；')||'连续稳定时间不足'):'、ZIP 确认 '+Boolean(last.archive)}、上传中 ${Boolean(last.uploading)}）`)}
+ }
+ function attachmentStability(previous,state,at){
+  if(!state.ready)return {firstReadyAt:null,positiveCount:0,fingerprint:'',ready:false};
+  const fingerprint=state.fingerprint||JSON.stringify([state.references,state.archive,state.uniqueAttachments]);
+  const same=previous.firstReadyAt!==null&&previous.fingerprint===fingerprint;
+  const firstReadyAt=same?previous.firstReadyAt:at,positiveCount=same?previous.positiveCount+1:1;
+  return {firstReadyAt,positiveCount,fingerprint,ready:positiveCount>=2&&at-firstReadyAt>=2000};
  }
  async function attach(task){
   // ChatGPT has used several labels for the same composer upload control.
@@ -208,6 +295,10 @@
    }
   }
   const items=attachmentItems(task),files=items.map(item=>file(item,uploadName(task,item)));
+  const scope=attachmentScope(),before=composerAttachmentSnapshot(scope);
+  const hiddenOrVisibleMarkers=scope?[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(node=>!node.closest?.(USER_SELECTOR+','+ASSISTANT_SELECTOR)):[];
+  const selection={key:attachmentKey(task),scope,names:files.map(item=>item.name),emptyBeforeSelection:before.cards.length===0&&hiddenOrVisibleMarkers.length===0,at:Date.now()};
+  selectedAttachments=null;
   if(input.multiple){
    selectFiles(input,files);
   }else{
@@ -219,6 +310,7 @@
     await sleep(750);
    }
   }
+  selectedAttachments=selection;
   await post('/update',{job_id:task.job_id,event:'progress',message:'已选择 '+files.length+'/'+files.length+' 个附件，等待 GPT 完成上传'});
   await waitAttachments(task);
   await post('/update',{job_id:task.job_id,event:'progress',message:workflowTask(task)?(task.workflow_input_mode==='single_source_edit'?'本张待修原图已就绪，正在填写局部修改提示词':'模板与本款印花依据两张图片已就绪，正在填写本步骤提示词'):referenceItems(task).length+' 张参考图和模板 ZIP 已就绪，正在填写提示词'});
@@ -895,7 +987,7 @@
    }else await post('/heartbeat',{version:VERSION,page:location.href,status:'需要处理',message}).catch(()=>{});
    }finally{activeSession='';busy=false;activeWorkflowTask=null}
  }
-  if(typeof module!=='undefined'&&module.exports){module.exports={imageQuotaText,workflowQuotaFailure,retryableWorkflowFailureText,workflowRetryFailure,uploadControl,selectFiles,responseWaitDecision,uploadName,referenceItems,attachmentItems,nameVisible,attachmentEvidence,canRetryPresend,inTaskChat,stableChatUrl,downloadableImageUrl,bestImageUrl,bestImageSource,isGeneratedImage,generatedCandidate,passivePage,responseDiagnostic,explicitGenerationFailure,workflowTask,workflowUserTurn,workflowAssistantTurn,downloadTask,executeWorkflow,generatedSet,composer,composerText,loginPromptVisible,run,setWorkflowContext:task=>{activeWorkflowTask=task}};return}
+  if(typeof module!=='undefined'&&module.exports){module.exports={imageQuotaText,workflowQuotaFailure,retryableWorkflowFailureText,workflowRetryFailure,uploadControl,selectFiles,responseWaitDecision,uploadName,referenceItems,attachmentItems,nameVisible,attachmentEvidence,attachmentState,attachmentStability,composerAttachmentSnapshot,waitAttachments,attach,canRetryPresend,inTaskChat,stableChatUrl,downloadableImageUrl,bestImageUrl,bestImageSource,isGeneratedImage,generatedCandidate,passivePage,responseDiagnostic,explicitGenerationFailure,workflowTask,workflowUserTurn,workflowAssistantTurn,downloadTask,executeWorkflow,generatedSet,composer,composerText,loginPromptVisible,run,setWorkflowContext:task=>{activeWorkflowTask=task}};return}
   setInterval(()=>{if(busy)post('/heartbeat',{version:VERSION,session:activeSession,page:location.href,status:'执行中',message:'正在处理当前套图，其他任务排队'}).catch(()=>{})},5000);
  setInterval(run,3000);run();
 })();
