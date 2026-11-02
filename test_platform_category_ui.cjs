@@ -17,7 +17,10 @@ const products=mall=>mall==='222'?[product('22201',{categoryName:'乙店类目',
  product('11103',{categoryName:'毛毯',platformCategoryId:'403',platformCategoryName:'毛毯',platformCategoryPath:['家居','软装','毛毯'],platformCategoryIds:['401','402','403']}),
  product('11104',{categoryName:'T恤',categorySourceLabel:'货号规则'}),
  product('11105',{platformCategoryConflict:true,categorySourceLabel:'平台类目冲突',activityStatus:'unknown',activityStatusLabel:'活动待确认'}),
- product('11106',{categoryName:'单叶类目',platformCategoryId:'909',platformCategoryName:'单叶类目'})
+ product('11106',{categoryName:'单叶类目',platformCategoryId:'909',platformCategoryName:'单叶类目'}),
+ product('11107',{categoryName:'男T恤',platformCategoryId:'103',platformCategoryName:'T恤',platformCategoryPath:['服装','男士','T恤'],platformCategoryIds:['101','102','103']}),
+ product('11108',{categoryName:'坐垫',platformCategoryName:'坐垫',platformCategoryPath:['家居','软装','坐垫']}),
+ product('11109',{categoryName:'床单',platformCategoryName:'床单',platformCategoryPath:['家居','床品','床单'],platformCategoryIds:['401','501','502']})
 ];
 (async()=>{
  const browser=await chromium.launch({executablePath:process.env.WORKBENCH_TEST_CHROME||path.join(__dirname,'runtime/gpt-chrome/chrome-win64/chrome.exe'),headless:true});
@@ -52,16 +55,31 @@ const products=mall=>mall==='222'?[product('22201',{categoryName:'乙店类目',
   await page.locator('.connection.connected').waitFor();
   await page.getByRole('navigation',{name:'工作板块',exact:true}).getByRole('button',{name:'维护',exact:true}).click();
   await page.getByRole('navigation',{name:'板块工具',exact:true}).getByRole('button',{name:'商品状态',exact:true}).click();
-  await page.getByLabel('平台类目采集覆盖',{exact:true}).filter({hasText:'4 / 6'}).waitFor();
+  await page.getByLabel('平台类目采集覆盖',{exact:true}).filter({hasText:'7 / 9'}).waitFor();
   assert((await page.getByLabel('平台类目采集覆盖',{exact:true}).innerText()).includes('待采集 1 · 冲突待核对 1'));
-  assert.equal(await tableRows().count(),6);
+  assert.equal(await tableRows().count(),9);
   assert((await tableRows().filter({has:page.getByText('11101',{exact:true})}).innerText()).includes('服装 > 男士 > T恤'));
-  result.checks.push('平台类目覆盖显示4已采集/1缺失/1冲突，逐商品完整路径及ID可见');
-  await platform().selectOption('id:101');
-  assert.deepEqual(await shown(),['11101','11102']);
+  result.checks.push('平台类目覆盖显示7已采集/1缺失/1冲突，逐商品完整路径及ID可见');
+  const pathOnlyKey='path:'+JSON.stringify(['家居','软装','坐垫']);
+  const options=await platform().locator('option').evaluateAll(rows=>rows.map(row=>({value:row.value,label:row.textContent})));
+  result.leafOptions=options;
+  assert.deepEqual(options.map(row=>row.value).sort(),['','id:103','id:203','id:403','id:909','id:502',pathOnlyKey,'missing','conflict'].sort());
+  assert.equal(options.find(row=>row.value==='').label,'全部平台类目（9）');
+  assert.equal(options.find(row=>row.value==='id:103').label,'服装 > 男士 > T恤（2）');
+  assert.equal(options.find(row=>row.value==='id:203').label,'服装 > 女士 > T恤（1）');
+  assert.equal(options.filter(row=>row.value!=='').reduce((sum,row)=>sum+Number(row.label.match(/（(\d+)）$/)[1]),0),9);
+  await page.screenshot({path:path.join(evidence,'platform-leaf-categories.png'),fullPage:true});
+  result.checks.push('只列实际末级及待采集/冲突选项，父祖先无独立项；同末级两SPU聚合计数且总数9无重复');
+  await platform().selectOption('id:103');
+  assert.deepEqual(await shown(),['11101','11107']);
   assert((await page.getByLabel('筛选商品报名情况',{exact:true}).innerText()).includes('有报名 1 · 当前无生效活动 1 · 待确认 0'));
-  await page.screenshot({path:path.join(evidence,'platform-parent-category.png'),fullPage:true});
-  result.checks.push('选择平台父类目覆盖子类目并核对对应商品报名数');
+  await page.getByLabel('活动状态筛选',{exact:true}).selectOption('enrolled');
+  assert.deepEqual(await shown(),['11101']);
+  await page.getByLabel('活动状态筛选',{exact:true}).selectOption('none');
+  assert.deepEqual(await shown(),['11107']);
+  await page.getByLabel('活动状态筛选',{exact:true}).selectOption('all');
+  assert.deepEqual(await shown(),['11101','11107']);
+  result.checks.push('末级类目筛选只命中所属SPU，报名统计及有报名/无生效活动交叉筛选保持');
   await group().getByRole('button',{name:'全选当前筛选（2）',exact:true}).click();
   await platform().selectOption('id:203');
   assert.deepEqual(await shown(),['11102']);
@@ -72,8 +90,11 @@ const products=mall=>mall==='222'?[product('22201',{categoryName:'乙店类目',
   await platform().selectOption('missing');assert.deepEqual(await shown(),['11104']);
   await platform().selectOption('conflict');assert.deepEqual(await shown(),['11105']);
   await platform().selectOption('id:909');assert.deepEqual(await shown(),['11106']);
+  await platform().selectOption(pathOnlyKey);assert.deepEqual(await shown(),['11108']);
+  await platform().selectOption('id:502');assert.deepEqual(await shown(),['11109']);
+  result.checks.push('无类目ID按完整末级路径筛选，只有路径ID数组时按末级ID筛选，均不生成父级项');
   await page.getByRole('button',{name:'清除筛选',exact:true}).click();
-  await page.getByLabel('搜索商品状态',{exact:true}).fill('家居');assert.deepEqual(await shown(),['11103']);
+  await page.getByLabel('搜索商品状态',{exact:true}).fill('家居 > 软装 > 毛毯');assert.deepEqual(await shown(),['11103']);
   await group().getByRole('button',{name:'全选当前筛选（1）',exact:true}).click();
   await group().getByRole('button',{name:'查看所选（1）',exact:true}).click();
   const dialog=page.getByRole('dialog',{name:'商品状态所选清单',exact:true});
@@ -92,10 +113,10 @@ const products=mall=>mall==='222'?[product('22201',{categoryName:'乙店类目',
   assert.deepEqual(result.writes[0].body.rules[0].platformCategoryNames,['毛毯','家居 > 软装 > 毛毯']);
   assert.deepEqual(result.writes[0].body.rules[0].specifications,[]);
   result.checks.push('平台类目映射可单独维护，无规格规则时仍发送完整精确映射字段（仅mock写入）');
-  await platform().selectOption('id:101');
+  await platform().selectOption('id:103');
   await page.getByLabel('商品状态店铺',{exact:true}).selectOption('222');
   await tableRows().filter({has:page.getByText('22201',{exact:true})}).waitFor();
-  assert.equal(await platform().inputValue(),'');assert.equal(await platform().locator('option[value="id:101"]').count(),0);
+  assert.equal(await platform().inputValue(),'');assert.equal(await platform().locator('option[value="id:103"]').count(),0);
   result.checks.push('切店清除官方类目筛选且不遗留前一店类目选项');
   legacy=true;await page.getByLabel('商品状态店铺',{exact:true}).selectOption('111');
   await page.getByLabel('平台类目采集覆盖',{exact:true}).filter({hasText:'0 / 2'}).waitFor();

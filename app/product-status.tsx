@@ -10,11 +10,13 @@ const money=(value:any,currency='CNY')=>value==null||value===''?'待采集':(cur
 const fresh=(value:Row)=>value?.stale?'快照较旧':'有效期内快照';
 const platformPath=(row:Row):string[]=>Array.isArray(row.platformCategoryPath)?row.platformCategoryPath.map(String).filter(Boolean):[];
 const platformLabel=(row:Row)=>platformPath(row).join(' > ')||row.platformCategoryName||(row.platformCategoryId?'类目 ID '+row.platformCategoryId:'');
-function platformNodes(row:Row){
- if(row.platformCategoryConflict)return [{key:'conflict',label:'平台类目冲突，待核对'}];
+function platformLeaf(row:Row){
+ if(row.platformCategoryConflict)return {key:'conflict',label:'平台类目冲突，待核对'};
  const names=platformPath(row),ids=Array.isArray(row.platformCategoryIds)?row.platformCategoryIds.map(String):[];
- if(!names.length)return row.platformCategoryId?[{key:'id:'+row.platformCategoryId,label:platformLabel(row)}]:row.platformCategoryName?[{key:'name:'+row.platformCategoryName,label:row.platformCategoryName}]:[{key:'missing',label:'平台类目待采集'}];
- return names.map((_,index)=>({key:ids.length===names.length&&ids[index]?'id:'+ids[index]:index===names.length-1&&row.platformCategoryId?'id:'+row.platformCategoryId:'path:'+JSON.stringify(names.slice(0,index+1)),label:names.slice(0,index+1).join(' > ')}));
+ const id=row.platformCategoryId||(names.length&&ids.length===names.length?ids[ids.length-1]:'');
+ if(id)return {key:'id:'+id,label:platformLabel(row)||'类目 ID '+id};
+ if(names.length)return {key:'path:'+JSON.stringify(names),label:names.join(' > ')};
+ return row.platformCategoryName?{key:'name:'+row.platformCategoryName,label:row.platformCategoryName}:{key:'missing',label:'平台类目待采集'};
 }
 const catalogQueryReady=(version:string)=>{const parts=String(version||'').split('.').map(Number);return parts.length>=3&&parts.every(Number.isInteger)&&(parts[0]>0||parts[1]>20||parts[1]===20&&parts[2]>=11)};
 async function api(path:string,body?:Row,signal?:AbortSignal){
@@ -58,7 +60,7 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
  const platformCategories=useMemo(()=>{
   if(!data||data.mallId!==mall)return [];
   const counts=new Map<string,{key:string;label:string;count:number}>();
-  for(const row of data.products||[]){const seen=new Set<string>();for(const node of platformNodes(row)){if(seen.has(node.key))continue;seen.add(node.key);const saved=counts.get(node.key);if(saved)saved.count++;else counts.set(node.key,{...node,count:1})}}
+  for(const row of data.products||[]){const node=platformLeaf(row),saved=counts.get(node.key);if(saved)saved.count++;else counts.set(node.key,{...node,count:1})}
   return [...counts.values()].sort((a,b)=>Number(['missing','conflict'].includes(a.key))-Number(['missing','conflict'].includes(b.key))||a.label.localeCompare(b.label,'zh-CN'));
  },[data,mall]);
  useEffect(()=>{if(data?.mallId===mall&&category&&!categories.some(item=>item.name===category))setCategory('')},[data,mall,category,categories]);
@@ -67,7 +69,7 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
   if(!data||data.mallId!==mall)return [];
   const source:Row[]=pool==='on_sale'?data.products:pool==='not_on_sale'?data.trash:data.pending;
   const term=query.trim().toLowerCase();
-  return (source||[]).filter(row=>(!term||[row.spuId,row.categoryName,platformLabel(row),row.platformCategoryId,...(row.skus||[]).flatMap((sku:Row)=>[sku.skuId,sku.skcId,sku.skuCode,sku.specification]),...(row.activityNames||[])].join(' ').toLowerCase().includes(term))&&(pool!=='on_sale'||(!category||(row.categoryName||'未分类')===category)&&(!platformCategory||platformNodes(row).some(node=>node.key===platformCategory))&&(activity==='all'||row.activityStatus===activity)&&(boost==='all'||row.acceleratorSwitchStatus===boost)));
+  return (source||[]).filter(row=>(!term||[row.spuId,row.categoryName,platformLabel(row),row.platformCategoryId,...(row.skus||[]).flatMap((sku:Row)=>[sku.skuId,sku.skcId,sku.skuCode,sku.specification]),...(row.activityNames||[])].join(' ').toLowerCase().includes(term))&&(pool!=='on_sale'||(!category||(row.categoryName||'未分类')===category)&&(!platformCategory||platformLeaf(row).key===platformCategory)&&(activity==='all'||row.activityStatus===activity)&&(boost==='all'||row.acceleratorSwitchStatus===boost)));
  },[data,mall,pool,category,platformCategory,query,activity,boost]);
  const batch=useBatchSelection(rows,JSON.stringify([mall,pool,category,platformCategory,query,activity,boost]),row=>String(row.spuId));
  const selected=batch.selectedRows.map(row=>String(row.spuId));
@@ -126,7 +128,7 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
     <div><strong>{data.counts.acceleratorSwitchDisabled??0} / {data.counts.onSale}</strong><span>加速器未开启</span></div>
     <div><strong>{data.counts.acceleratorSwitchUnknown??data.counts.onSale} / {data.counts.onSale}</strong><span>加速器待确认</span></div>
    </div><p className="panelnote">商品：{stamp(data.sources.products.captured)}（{fresh(data.sources.products)}） · 活动：{stamp(data.sources.activities.captured)}（{fresh(data.sources.activities)}） · 加速器：{stamp(data.sources.accelerators?.captured)} · 有效期内已确认开启或未开启 {data.sources.accelerators?.switchFreshProducts??0} / {data.counts.onSale}</p>
-   <p className="panelnote" aria-label="平台类目采集覆盖">平台类目已采集 {data.categoryCoverage?.matched??data.products.filter((row:Row)=>!row.platformCategoryConflict&&!!platformLabel(row)).length} / {data.products.length} 个 SPU · 待采集 {data.categoryCoverage?.missing??data.products.filter((row:Row)=>platformNodes(row)[0]?.key==='missing').length} · 冲突待核对 {data.categoryCoverage?.conflicts??data.products.filter((row:Row)=>row.platformCategoryConflict).length}。{data.products.some((row:Row)=>!platformLabel(row)&&!row.platformCategoryConflict)&&'请重新加载统一助手到 0.20.13，刷新商家后台和工作台，再点击“立即更新商品＋活动”补采平台类目。'}平台类目缺失的商品仍保留在列表中。</p></>}
+   <p className="panelnote" aria-label="平台类目采集覆盖">平台类目已采集 {data.categoryCoverage?.matched??data.products.filter((row:Row)=>!row.platformCategoryConflict&&!!platformLabel(row)).length} / {data.products.length} 个 SPU · 待采集 {data.categoryCoverage?.missing??data.products.filter((row:Row)=>platformLeaf(row).key==='missing').length} · 冲突待核对 {data.categoryCoverage?.conflicts??data.products.filter((row:Row)=>row.platformCategoryConflict).length}。{data.products.some((row:Row)=>!platformLabel(row)&&!row.platformCategoryConflict)&&'请重新加载统一助手到 0.20.13，刷新商家后台和工作台，再点击“立即更新商品＋活动”补采平台类目。'}平台类目缺失的商品仍保留在列表中。</p></>}
   </section>
   <section className="panel">
    <div className="filterbar">
@@ -135,7 +137,7 @@ export default function ProductStatus({preferredMall='',clientId=''}:{preferredM
     {!!data?.counts.unknown&&<Button variant={pool==='unknown'?'default':'outline'} onClick={()=>setPool('unknown')}>状态待确认 {data.counts.unknown}</Button>}
     <input aria-label="搜索商品状态" style={{width:240,maxWidth:'100%'}} placeholder="搜索类目、SPU、SKU、货号或活动" value={query} onChange={event=>setQuery(event.target.value)}/>
     {pool==='on_sale'&&<>
-     <select aria-label="平台类目筛选" style={{width:300,maxWidth:'100%'}} title={platformCategories.find(item=>item.key===platformCategory)?.label||'按平台完整类目筛选，可选择上级类目'} value={platformCategory} onChange={event=>setPlatformCategory(event.target.value)}><option value="">全部平台类目（{data?.products?.length??0}）</option>{platformCategories.map(item=><option key={item.key} value={item.key}>{item.label}（{item.count}）</option>)}</select>
+     <select aria-label="平台类目筛选" style={{width:300,maxWidth:'100%'}} title={platformCategories.find(item=>item.key===platformCategory)?.label||'按商品所属的末级平台类目筛选，保留完整路径区分同名类目'} value={platformCategory} onChange={event=>setPlatformCategory(event.target.value)}><option value="">全部平台类目（{data?.products?.length??0}）</option>{platformCategories.map(item=><option key={item.key} value={item.key}>{item.label}（{item.count}）</option>)}</select>
      <select aria-label="商品类目筛选" style={{width:180,maxWidth:'100%'}} value={category} onChange={event=>setCategory(event.target.value)}><option value="">全部业务类目（{data?.products?.length??0}）</option>{categories.map(item=><option key={item.name} value={item.name}>{item.name}（{item.count}）</option>)}</select>
       <select aria-label="活动状态筛选" value={activity} onChange={event=>setActivity(event.target.value)}><option value="all">全部活动状态</option><option value="enrolled">有报名记录</option><option value="none">当前无生效活动</option><option value="unknown">活动待确认</option></select>
      <select aria-label="加速器状态筛选" value={boost} onChange={event=>setBoost(event.target.value)}><option value="all">全部加速器状态</option><option value="enabled">已开启</option><option value="disabled">未开启</option><option value="unknown">待确认</option></select>
