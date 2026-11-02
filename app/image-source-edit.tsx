@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { useWorkbenchMode } from './workbench-mode';
 
 type Preset = {
   id: string;
@@ -47,6 +48,7 @@ const reason = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
+  const { professional, setMode } = useWorkbenchMode();
   const [presets, setPresets] = useState<Preset[]>([]);
   const [presetId, setPresetId] = useState('sweater-front-back-fix-v1');
   const [prompt, setPrompt] = useState('');
@@ -225,10 +227,10 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
           )}
         </select>
       </label>
-      <p className="panelnote">
+      {professional && <p className="panelnote">
         {currentPreset?.description ||
           '把主画面圆领改成半高领，减弱右下火焰圆环内放大细节的绒毛感。印花、人物、排版及右侧五个小圆窗保持原样。'}
-      </p>
+      </p>}
       <div className="formstack">
         <label className="field" htmlFor="source-edit-folder">
           <span>待修图片所在目录</span>
@@ -254,12 +256,12 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
           />
         </label>
       </div>
-      <p className="panelnote">
+      {professional ? <p className="panelnote">
         扫描每款文件夹中的 01-main.png、02-back.png。含 ChatGPT / GPT
         前缀图片的文件夹视为手工处理过，会整款排除；衣架、穿搭、平铺图不发送。新成品保存到独立目录，原图保留。
         已登记的人工修复目录会继续排除，即使之后图片改名或移走。
-      </p>
-      <details style={{ margin: '16px 0' }}>
+      </p> : <p className="panelnote">扫描后选择需要修复的图片；新成品保存到独立目录，原图保留。</p>}
+      {professional && <details style={{ margin: '16px 0' }}>
         <summary style={{ cursor: 'pointer' }}>
           查看／编辑本次修复提示词
         </summary>
@@ -281,8 +283,8 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
         >
           恢复修复模板提示词
         </Button>
-      </details>
-      <fieldset className="formstack">
+      </details>}
+      {professional && <fieldset className="formstack">
         <legend>参与本批修复的浏览器</legend>
         <div className="buttons">
           {[
@@ -311,7 +313,11 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
         <p className="panelnote">
           Chrome 的已连接独立配置均可参与，各账号沿用现有冷却和额度规则。
         </p>
-      </fieldset>
+      </fieldset>}
+      {!professional && (!prompt.trim() || !browsers.length) && <output className="banner warn">
+        {!prompt.trim() ? '当前预设的提示词为空。' : '尚未选择生图浏览器。'}
+        <Button variant="ghost" onClick={() => setMode('professional')}>检查高级设置</Button>
+      </output>}
       <div className="buttons">
         <Button
           variant="outline"
@@ -422,7 +428,7 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
               </table>
             </div>
           )}
-          {!!scan.skipped.length && (
+          {professional && !!scan.skipped.length && (
             <details style={{ marginTop: 16 }}>
               <summary style={{ cursor: 'pointer' }}>
                 查看排除的文件夹（{scan.skipped.length}）
@@ -447,7 +453,7 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
             批次 {batch.batch_no || '—'} · 新建 {batch.prepared_count || 0} 张 ·
             排队 {batch.queued_count || 0} 张
           </p>
-          {!!batch.jobs?.length && (
+          {professional && !!batch.jobs?.length && (
             <details>
               <summary>查看成品保存位置</summary>
               {batch.jobs.map((job) => (
@@ -460,7 +466,7 @@ export default function ImageSourceEdit({ onBusy, onStarted }: Props) {
               ))}
             </details>
           )}
-          {!!batch.skipped?.length && (
+          {professional && !!batch.skipped?.length && (
             <details>
               <summary>已存在的修复任务（{batch.skipped.length}）</summary>
               {batch.skipped.map((item, index) => (

@@ -1,6 +1,7 @@
 'use client';
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {Button} from '@/components/ui/button';
+import {useWorkbenchMode} from './workbench-mode';
 
 import {BatchSelectionTools,useBatchSelection} from './batch-selection';
 const PAGE_SIZE = 50;
@@ -63,6 +64,7 @@ function Pager({page, total, onChange}: {page: number; total: number; onChange: 
 }
 
 export default function Patrol({preferredMall = '', active, onOpen}: {preferredMall?: string; active: boolean; onOpen: () => void}) {
+  const {professional} = useWorkbenchMode();
   const [data, setData] = useState<State | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -254,7 +256,7 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
         }}
       >
         <strong id="patrol-warn-title" style={{display: 'block', marginBottom: 8, fontSize: 15}}>巡店预警未处理完</strong>
-        <p style={{margin: '0 0 12px', lineHeight: 1.5}}>{warnText}</p>
+        <p style={{margin: '0 0 12px', lineHeight: 1.5}}>{professional ? warnText : pendingText + '。可稍后去巡店处理。'}</p>
         {error && <p role="alert" style={{margin: '0 0 8px'}}>{error}</p>}
         <div className="buttons" style={{display: 'flex', gap: 8, flexWrap: 'wrap'}}>
           <Button disabled={busy} onClick={handle}>{busy ? '记录中…' : '去巡店'}</Button>
@@ -267,9 +269,9 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
         <div className="sectionhead">
           <div>
             <h2>巡店</h2>
-            <p>有活动须开加速器；无活动和无加速器可健康。广告商品标签尚未接入。</p>
+            {professional ? <><p>有活动须开加速器；无活动和无加速器可健康。广告商品标签尚未接入。</p>
             <p>按后台「商品流量待关注」标记匹配，已匹配商品单独展示，不重复进入健康预警；未采到或过期的数据需更新确认。</p>
-            <p>「刷新预警」只重读本机已采集数据，不会触发平台重新抓取。卡片上的「加速器快照较旧」要去商品状态页点「更新加速器状态」。</p>
+            <p>「刷新预警」只重读本机已采集数据，不会触发平台重新抓取。卡片上的「加速器快照较旧」要去商品状态页点「更新加速器状态」。</p></> : <p>查看异常商品，处理后确认消警。数据过期时请先更新商品状态。</p>}
           </div>
           <Button variant="outline" disabled={!preferredMall || busy || refreshing} onClick={() => load(undefined, true)}>
             {refreshing ? '正在重读本地库…' : '刷新预警'}
@@ -278,7 +280,7 @@ export default function Patrol({preferredMall = '', active, onOpen}: {preferredM
         {!preferredMall && <p>请切换到当前浏览器店铺后查看巡店预警。</p>}
         {error && <div className="banner danger" role="alert">{error}</div>}
         {status && <div className="banner" role="status">{status}</div>}
-        {current?.sources && (
+        {professional && current?.sources && (
           <p className="panelnote">
             本地采集：商品 {ageText(current.sources.products)} · 活动 {ageText(current.sources.activities)} · 加速器 {ageText(current.sources.accelerators)}
             {current.sources.accelerators?.freshProducts != null ? `（新鲜确认 ${current.sources.accelerators.freshProducts}/${current.sources.accelerators.observedProducts ?? '?'}）` : ''}

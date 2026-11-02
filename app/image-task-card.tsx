@@ -3,6 +3,7 @@
 // Historical job snapshots have several schemas. Local images use backend-generated thumbnails.
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { useWorkbenchMode } from './workbench-mode';
 import './image-task-card.css';
 
 type Row = Record<string, any>;
@@ -47,6 +48,7 @@ function Thumb({ job, step, large = false, onOpen }: { job: Row; step: Row; larg
 }
 export default function ImageTaskCard({ job: j, selected, busy, canAssign, onSelect, onDetail, onRetry,
   onResume, onPause, onReassign, onRepair, onMessage }: Props) {
+  const { professional, setMode } = useWorkbenchMode();
   const [keys, setKeys] = useState<string[]>([]);
   const [preview, setPreview] = useState<Row | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -90,24 +92,27 @@ export default function ImageTaskCard({ job: j, selected, busy, canAssign, onSel
   const selectStep = (key: string, checked: boolean) => setKeys((previous) => checked ? [...previous, key] : previous.filter((value) => value !== key));
   return <article className={'image-task-card' + (completed ? ' completed' : '')} aria-label={'任务 ' + (j.task_no || j.id)}>
     <div className="image-task-heading">
-      <label className="image-task-select"><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)}
-        aria-label={'选择任务 ' + (j.task_no || j.id)} /></label>
-      <div className="image-task-title"><strong>{j.title || j.task_no}</strong><small>{j.task_no || j.id.slice(0, 8).toUpperCase()}
-        {j.repair_source_id || j.retry_source_id ? ' · 重试副本' : ''}</small></div>
+      {professional && <label className="image-task-select"><input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)}
+        aria-label={'选择任务 ' + (j.task_no || j.id)} /></label>}
+      <div className="image-task-title"><strong>{j.title || j.task_no}</strong>{professional && <small>{j.task_no || j.id.slice(0, 8).toUpperCase()}
+        {j.repair_source_id || j.retry_source_id ? ' · 重试副本' : ''}</small>}</div>
       <span className={'tag ' + (completed ? 'green' : needsReview || j.batch_phase === 'failed' ? 'red' : 'amber')}>
         {phaseNames[j.batch_phase] || j.status || '待处理'}</span>
       <span className="image-task-count">{savedCount}/{count} 张</span>
     </div>
-    <div className="image-task-times" aria-label="任务时间（北京时间）">
+    {professional && <div className="image-task-times" aria-label="任务时间（北京时间）">
       <span>提交 <b>{time(j.queued_at || j.created || firstEvent('prepared'))}</b></span>
       <span>开始 <b>{time(started)}</b></span>
       <span>发送 <b>{time(sent)}</b></span>
       <span>{completed ? '完成' : j.failed_at || j.paused_at ? '停止' : '最近进展'} <b>{time(completed ? j.completed_at : j.failed_at || j.paused_at || j.last_progress_at)}</b></span>
-    </div>
-    <p className="image-task-status">{j.status || phaseNames[j.batch_phase]}
+    </div>}
+    {professional && <p className="image-task-status">{j.status || phaseNames[j.batch_phase]}
       <span>{j.assigned_browser ? `${browserNames[j.assigned_browser] || j.assigned_browser} · ${j.assigned_worker?.slice(0, 8) || '待绑定配置'}` : '等待分配浏览器'}</span>
-    </p>
-    {j.error && <p className="image-task-error" role="alert">{j.error}</p>}
+    </p>}
+    {professional && j.error && <p className="image-task-error" role="alert">{j.error}</p>}
+    {!professional && (needsReview || j.batch_phase === 'failed' || j.error) && <p className="image-task-error" role="alert">
+      {needsReview ? '此任务已暂停，需核对原聊天后继续。' : '此任务未完成，请查看详情处理。'}已保存图片保留。
+    </p>}
     {!!steps.length && <div className="image-task-filmstrip" aria-label="步骤成品缩略图">
       {steps.map((step) => <div key={step.number}>
         <Thumb job={j} step={step} onOpen={() => openPreview(step)} />
@@ -115,15 +120,17 @@ export default function ImageTaskCard({ job: j, selected, busy, canAssign, onSel
       </div>)}
     </div>}
     <div className="buttons image-task-main-actions">
-      <Button variant="outline" disabled={busy || retryBlocked || !canAssign} onClick={() => requestRetry()}
-        title={retryBlocked ? '运行中的任务请先暂停；发送结果不明时先核对原聊天' : '创建独立副本并排队，原任务和成图保留'}>重新发送整套任务</Button>
+      {professional && <Button variant="outline" disabled={busy || retryBlocked || !canAssign} onClick={() => requestRetry()}
+        title={retryBlocked ? '运行中的任务请先暂停；发送结果不明时先核对原聊天' : '创建独立副本并排队，原任务和成图保留'}>重新发送整套任务</Button>}
       {active && <Button variant="outline" disabled={busy} onClick={onPause}>暂停</Button>}
       {!active && !completed && !needsReview && <Button variant="outline" disabled={busy || !canAssign} onClick={onResume}>
         {j.chat_url ? '回原聊天继续' : '开始生成 / 继续'}</Button>}
       {j.chat_url && <a className="external" href={j.chat_url} target="_blank" rel="noreferrer">打开原聊天 ↗</a>}
+      {!professional && (needsReview || j.batch_phase === 'failed' || j.error) && <Button variant="outline" disabled={busy}
+        onClick={() => setMode('professional')}>核对与处理</Button>}
     </div>
-    {needsReview && <p className="image-task-note">发送或收图结果需要核对。打开原聊天检查后，可手动重试指定步骤或重发整套；原任务与已保存图片保留。</p>}
-    <details className="image-task-details" onToggle={(event) => { if (event.currentTarget.open) void onDetail(); }}>
+    {professional && needsReview && <p className="image-task-note">发送或收图结果需要核对。打开原聊天检查后，可手动重试指定步骤或重发整套；原任务与已保存图片保留。</p>}
+    {professional && <details className="image-task-details" onToggle={(event) => { if (event.currentTarget.open) void onDetail(); }}>
       <summary>查看步骤与操作</summary>
       {!!steps.length && <>
         <div className="image-task-steps">
@@ -169,7 +176,7 @@ export default function ImageTaskCard({ job: j, selected, busy, canAssign, onSel
           {j.batch_no && ['queued', 'paused', 'failed'].includes(j.batch_phase) && <Button variant="outline" disabled={busy || !canAssign} onClick={onReassign}>按当前浏览器分配本批剩余任务</Button>}
         </div>
       </details>
-    </details>
+    </details>}
     {retryConfirmation && <dialog className="image-task-dialog image-task-confirm" ref={confirmDialog}
       onCancel={() => setRetryConfirmation(null)} onClose={() => setRetryConfirmation(null)} aria-label="确认重试范围">
       <h3>核对后重新生成</h3>

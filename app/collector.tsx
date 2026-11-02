@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import SyncAudit from './sync-audit';
 import FlowDetail from './flow-detail';
 import {BatchSelectionTools,useBatchSelection} from './batch-selection';
+import { useWorkbenchMode } from './workbench-mode';
 type Row = Record<string, any>;
 const labels: Record<string, string> = {
   products: '商品目录',
@@ -95,6 +96,7 @@ export default function Collector({
   onReview: (row: Row) => void;
   preferredMall?: string;
 }) {
+  const { professional } = useWorkbenchMode();
   const [data, setData] = useState<Row | null>(null),
     [control, setControl] = useState<Row | null>(null),
     [shop, setShop] = useState(''),
@@ -170,14 +172,14 @@ export default function Collector({
   const taskSummary = control?.task_summary || control?.summary || {};
   return (
     <>
-      <div className="banner">
+      {professional && <div className="banner">
         <span>
           <strong>已切换至正确源码：Temu 数据采集助手</strong>
           <br />
           扩展只采集发起任务的浏览器当前登录店铺，并把「订单＋流量」「商品＋活动」或「广告」结果保存到本机。尚未收到回执时不显示已连接。
         </span>
-      </div>
-      <section className="panel">
+      </div>}
+      {professional && <section className="panel">
         <div className="sectionhead">
           <h2>连接检查</h2>
           <span className="tag green">本地页面已打开</span>
@@ -208,48 +210,57 @@ export default function Collector({
             ? '。本批未入库，请按提示修正后补传。'
             : ''}
         </p>
-      </section>
+      </section>}
       {error && <div className="banner danger">{error}</div>}
       <section className="panel collector-tasks">
         <div className="sectionhead">
           <div>
             <h2>采集任务中心</h2>
-            <p>这里汇总插件上报的实时阶段、进度、预计剩余时间和最近任务结果。</p>
+            <p>{professional ? '这里汇总插件上报的实时阶段、进度、预计剩余时间和最近任务结果。' : '当前采集记录的任务总数、成功和失败。'}</p>
           </div>
           <span className={'tag ' + (activeTasks.length ? 'amber' : 'green')}>
             {activeTasks.length ? `${activeTasks.length} 个任务处理中` : '当前没有运行中任务'}
           </span>
         </div>
-        <div className="stats collector-task-stats">
-          {[
+        <div className="stats collector-task-stats" aria-label="采集任务摘要" style={professional ? undefined : { gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+          {(professional ? [
             ['任务总数', taskSummary.total ?? 0],
             ['等待领取', taskSummary.queued ?? 0],
             ['执行中', taskSummary.running ?? 0],
             ['已完成', taskSummary.finished ?? 0],
             ['失败', taskSummary.failed ?? 0],
-          ].map(([label, value]) => (
+          ] : [
+            ['任务总数', taskSummary.total ?? 0],
+            ['成功', taskSummary.finished ?? 0],
+            ['失败', taskSummary.failed ?? 0],
+          ]).map(([label, value]) => (
             <div className="stat" key={String(label)}><span>{label}</span><strong>{value}</strong></div>
           ))}
         </div>
+        {!professional && <p className="panelnote">等待 {taskSummary.queued ?? 0} · 执行中 {taskSummary.running ?? 0}</p>}
         {!!activeTasks.length && <div className="task-live-grid">
           {activeTasks.map((task) => <article key={task.client_id} className={'task-live ' + task.status}>
             <div><strong>{task.browser || '浏览器'} · {task.store_name || task.mall_id || '识别店铺中'}</strong><span className="tag">{taskStatus[task.status] || task.status}</span></div>
             <p>{taskMode[task.taskMode] || task.taskMode || '采集任务'} · {task.message || task.phase || '正在处理'}</p>
             <div className="task-progress"><i style={{ width: `${Math.max(0, Math.min(100, Number(task.progress || 0)))}%` }} /></div>
-            <small>进度 {Number(task.progress || 0).toFixed(0)}%{task.eta ? ` · 预计剩余 ${task.eta}` : ''} · 最近上报 {task.at ? new Date(task.at).toLocaleString('zh-CN') : '—'}</small>
+            <small>进度 {Number(task.progress || 0).toFixed(0)}%{task.eta ? ` · 预计剩余 ${task.eta}` : ''}{professional && <> · 最近上报 {task.at ? new Date(task.at).toLocaleString('zh-CN') : '—'}</>}</small>
           </article>)}
         </div>}
-        {!!recentRuns.length && <details className="task-history" open><summary>最近采集任务：成功、失败与执行记录</summary>
+        {!professional && !!recentRuns.filter(task=>task.status==='failed').length && <details className="task-history"><summary>查看最近失败的采集任务</summary>
+          {recentRuns.filter(task=>task.status==='failed').map(task=><p key={task.id}><strong>{task.store_name || task.mall_id || '采集任务'} · {taskMode[task.taskMode] || task.taskMode || '采集任务'}</strong><br/>{task.message || '采集未完成，请检查商家后台后重试。'}</p>)}
+        </details>}
+        {professional && !!recentRuns.length && <details className="task-history" open><summary>最近采集任务：成功、失败与执行记录</summary>
           <div className="tablewrap"><table><thead><tr><th>开始时间</th><th>浏览器 / 店铺</th><th>任务</th><th>状态</th><th>进度</th><th>结果说明</th></tr></thead><tbody>
             {recentRuns.map((task) => <tr key={task.id}><td>{task.startedAt ? new Date(task.startedAt).toLocaleString('zh-CN') : new Date(task.created_at).toLocaleString('zh-CN')}</td><td>{task.browser || '—'}<small>{task.store_name || task.mall_id || '—'}</small></td><td>{taskMode[task.taskMode] || task.taskMode || '—'}</td><td><span className={'tag ' + (task.status === 'failed' ? 'red' : ['done','finished'].includes(task.status) ? 'green' : 'amber')}>{taskStatus[task.status] || task.status}</span></td><td>{Number(task.progress || 0).toFixed(0)}%</td><td>{task.message || task.phase || '—'}</td></tr>)}
           </tbody></table></div>
         </details>}
-        {!!recentCommands.length && <details className="task-history"><summary>查看最近 {recentCommands.length} 个工作台发起的任务</summary>
+        {professional && !!recentCommands.length && <details className="task-history"><summary>查看最近 {recentCommands.length} 个工作台发起的任务</summary>
           <div className="tablewrap"><table><thead><tr><th>创建时间</th><th>店铺</th><th>状态</th><th>浏览器</th><th>说明</th></tr></thead><tbody>
             {recentCommands.map((task) => <tr key={task.id}><td>{new Date(task.created).toLocaleString('zh-CN')}</td><td>{name(task.mall_id)}</td><td>{taskStatus[task.status] || task.status}</td><td>{task.claimed_browser || '—'}</td><td>{task.message || '—'}</td></tr>)}
           </tbody></table></div>
         </details>}
       </section>
+      {professional && <>
       <div className="filterbar">
         <select
           aria-label="选择扩展店铺"
@@ -480,6 +491,7 @@ export default function Collector({
           采集器已改为完全本地模式：不按手机号匹配账号，不连接外部看板。Chrome 与 Edge 分别记录自己的浏览器实例和当前店铺，切换店铺时会停止当前任务，避免数据串店。
         </span>
       </div>
+      </>}
     </>
   );
 }

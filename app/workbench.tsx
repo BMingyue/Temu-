@@ -30,6 +30,7 @@ import FeatureCenter from './feature-center';
 import ProductStatus from './product-status';
 import TrafficAccelerator from './traffic-accelerator';
 import Onboarding from './onboarding';
+import { WorkbenchModeProvider, WorkbenchModeSwitch, useWorkbenchMode } from './workbench-mode';
 import {BatchSelectionTools, useBatchSelection} from './batch-selection';
 import { sections, tools as nav, sectionForTab } from './workbench-navigation';
 import workbenchRelease from '../workbench-release.json';
@@ -121,7 +122,11 @@ function Empty({ title, detail, children }: any) {
   );
 }
 export default function Workbench() {
-  const [tab, setTab] = useState('patrol'),
+  return <WorkbenchModeProvider><WorkbenchContent /></WorkbenchModeProvider>;
+}
+function WorkbenchContent() {
+  const {professional} = useWorkbenchMode();
+  const [tab, updateTab] = useState('patrol'),
     [state, setState] = useState<Row | null>(null),
     [message, setMessage] = useState(''),
     [error, setError] = useState(''),
@@ -129,6 +134,7 @@ export default function Workbench() {
   const [restarting, setRestarting] = useState(false);
   const [serverVersion, setServerVersion] = useState('');
   const [guideOpen, setGuideOpen] = useState(false);
+  const setTab = useCallback((next: string) => { updateTab(next); setMessage(''); }, []);
   const sectionId = sectionForTab(tab);
   const currentSection = sections.find(section => section.id === sectionId)!;
   const currentTool = nav.find(tool => tool.id === tab);
@@ -468,7 +474,7 @@ export default function Workbench() {
     });
   }
   return (
-    <div className="shell">
+    <div className={'shell ' + (professional ? 'workbench-professional' : 'workbench-simple')}>
       <aside className="sidebar">
         <div className="brand">
           <span className="brandmark">T</span>
@@ -515,7 +521,8 @@ export default function Workbench() {
             <h1>{currentTool?.title || '辅助与设置'}</h1>
           </div>
           <div className="headtools">
-            <span className="tag" title={`页面 ${workbenchRelease.version} / 服务 ${serverVersion || '连接中'}`}>工作台 {workbenchRelease.version}</span>
+            <WorkbenchModeSwitch />
+            {professional && <span className="tag" title={`页面 ${workbenchRelease.version} / 服务 ${serverVersion || '连接中'}`}>工作台 {workbenchRelease.version}</span>}
             <Button variant="outline" onClick={()=>setGuideOpen(value=>!value)} aria-expanded={guideOpen}>使用指南</Button>
             <Button
               variant="outline"
@@ -525,13 +532,13 @@ export default function Workbench() {
               <RefreshCw size={15} />
               刷新
             </Button>
-            <Button
+            {professional && <Button
               variant="outline"
               onClick={restartWorkbench}
               disabled={busy || restarting}
             >
               {restarting ? '正在重启…' : '重启工作台'}
-            </Button>
+            </Button>}
           </div>
         </header>
         {serverVersion && serverVersion !== workbenchRelease.version && (
@@ -540,7 +547,7 @@ export default function Workbench() {
           </div>
         )}
         {guideOpen && <Onboarding open={setTab} onClose={()=>setGuideOpen(false)} />}
-        {browserContext.client_id && (
+        {browserContext.client_id && (professional || tab !== 'images') && (
           <div className="banner">
             <span>
               <strong>

@@ -1,11 +1,12 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type SetStateAction } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import PromptEditor from './prompt-editor';
 import ImageRunner from './image-runner';
 import ImageTaskCard from './image-task-card';
 import ImageSourceEdit from './image-source-edit';
+import { useWorkbenchMode } from './workbench-mode';
 type Row = Record<string, any>;
 const browserNames: Record<string, string> = { chrome: 'Chrome', edge: 'Edge', firefox: 'Firefox' };
 function workflowStepCount(value?: Row) {
@@ -13,6 +14,7 @@ function workflowStepCount(value?: Row) {
   return Number.isInteger(count) && count > 0 ? count : 4;
 }
 export default function ImageQueue({ draft }: { draft?: Row }) {
+  const { professional } = useWorkbenchMode();
   const loading = useRef(false);
   const detailedIds = useRef(new Set<string>());
   const retryRequests = useRef(new Map<string, string>());
@@ -21,6 +23,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
   const [taskPages, setTaskPages] = useState({ pending: 1, saved: 1 });
   const [connectionError, setConnectionError] = useState('');
   const [sourceEditMode, setSourceEditMode] = useState(false);
+  const [batchSelection, setBatchSelection] = useState('latest');
   const [form, setForm] = useState({
     folders: '',
     output_folder: '',
@@ -57,11 +60,11 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
     [preview, setPreview] = useState<Row | null>(null),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState(''),
-    [selectedIds, setSelectedIds] = useState<string[]>([]),
+    [selection, setSelection] = useState<{ scope: string; ids: string[] }>({ scope: '', ids: [] }),
     [confirmClear, setConfirmClear] = useState<'all' | 'selected' | null>(null),
     [confirmDelete, setConfirmDelete] = useState(false),
     [confirmReset, setConfirmReset] = useState(false),
-    [taskFilter, setTaskFilter] = useState<'all' | 'pending' | 'saved' | 'failed' | 'needs_review'>('all');
+    [taskFilter, setTaskFilter] = useState<'all' | 'pending' | 'saved' | 'failed' | 'needs_review' | 'issues'>('all');
   async function load() {
     if (loading.current) return;
     loading.current = true;
@@ -155,6 +158,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
       const v = (await r.json()) as Row;
       if (!r.ok) throw Error(v.error);
       if (start) {
+        setBatchSelection(v.batch_no || 'latest');
         if (v.workflow_settings) setWorkflowVersion(v.workflow_settings.version);
         setUsedPrompt(prompt || '');
         const names = form.browsers
@@ -177,9 +181,9 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
       } else {
         setPreview(v);
         setMessage(
-          '已自动填入 ' +
-            v.count +
-            ' 款印花，确认模板、保存目录和参与浏览器后点击开始。',
+          professional
+            ? `已自动填入 ${v.count} 款印花，确认模板、保存目录和参与浏览器后点击开始。`
+            : `扫描到 ${v.count} 款印花，确认后点击“开始自动生成”。`,
         );
       }
     } catch (e: any) {
@@ -456,7 +460,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
       const r = await fetch('/api/image-jobs/retry-failed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Workbench': 'local' },
-        body: '{}',
+        body: JSON.stringify({ ids: scopedJobs.filter((job) => job.batch_phase === 'failed').map((job) => job.id) }),
       });
       const v = (await r.json()) as Row;
       if (!r.ok) throw Error(v.error);
@@ -539,26 +543,64 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
       setBusy(false);
     }
   }
-  const visibleJobs = jobs.filter((job) =>
-    (taskFilter === 'all' || (taskFilter === 'pending' && job.batch_phase !== 'saved') || job.batch_phase === taskFilter) &&
+  const batches = [...new Set(jobs.map((job) => job.batch_no || 'unbatched'))].sort((a, b) => b.localeCompare(a));
+  const latestBatch = batches.find((batch) => batch !== 'unbatched') || batches[0] || '';
+  const validBatchSelection = batchSelection === 'latest' || (batchSelection === 'all' && professional) || batches.includes(batchSelection)
+    ? batchSelection : 'latest';
+  const selectedBatch = validBatchSelection === 'latest' ? latestBatch : validBatchSelection;
+  const selectionScope = `${professional ? 'professional' : 'simple'}:${selectedBatch}`;
+  const selectedIds = selection.scope === selectionScope ? selection.ids : [];
+  function setSelectedIds(next: SetStateAction<string[]>) {
+    setSelection((previous) => ({ scope: selectionScope, ids: typeof next === 'function'
+      ? next(previous.scope === selectionScope ? previous.ids : []) : next }));
+  }
+  const scopedJobs = selectedBatch === 'all' ? jobs : jobs.filter((job) => (job.batch_no || 'unbatched') === selectedBatch);
+  const successful = scopedJobs.filter((job) => job.batch_phase === 'saved').length;
+  const failed = scopedJobs.filter((job) => job.batch_phase === 'failed').length;
+  const needsReview = scopedJobs.filter((job) => job.batch_phase === 'needs_review').length;
+  const active = scopedJobs.filter((job) => ['claimed', 'sending', 'sent', 'waiting', 'downloading'].includes(job.batch_phase)).length;
+  const queued = scopedJobs.filter((job) => job.batch_phase === 'queued').length;
+  const paused = scopedJobs.filter((job) => job.batch_phase === 'paused').length;
+  const displayFilter = !professional && ['failed', 'needs_review'].includes(taskFilter) ? 'issues' : taskFilter;
+  const visibleJobs = scopedJobs.filter((job) =>
+    (displayFilter === 'all' || (displayFilter === 'pending' && job.batch_phase !== 'saved') ||
+      (displayFilter === 'issues' && ['failed', 'needs_review'].includes(job.batch_phase)) || job.batch_phase === displayFilter) &&
     (!taskQuery.trim() || [job.title, job.task_no, job.batch_no, job.id].some((value) => String(value || '').toLowerCase().includes(taskQuery.trim().toLowerCase()))),
   );
+  const batchLabel = (batch: string) => {
+    if (batch === 'unbatched') return '未分批的旧任务';
+    const match = batch.match(/^BATCH-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-/);
+    return match ? `${match[2]}/${match[3]} ${match[4]}:${match[5]} · ${jobs.filter((job) => job.batch_no === batch).length} 项` : batch;
+  };
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+  const metrics = selectedBatch === 'all' ? summary : {
+    total_jobs: scopedJobs.length,
+    saved_jobs: successful,
+    sent_jobs: scopedJobs.filter((job) => job.sent_at || job.has_sending_event).length,
+    sent_today: scopedJobs.filter((job) => job.sent_at && new Date(job.sent_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }) === today).length,
+    saved_images: scopedJobs.reduce((total, job) => total + Number(job.saved_count ?? (job.step_progress || job.steps || []).filter((step: Row) => step.phase === 'saved').length), 0),
+    expected_images: scopedJobs.reduce((total, job) => total + Number(job.expected_count || job.step_count || 0), 0),
+    queued, active, failed, needs_review: needsReview,
+    failed_steps: scopedJobs.reduce((total, job) => total + (job.step_progress || job.steps || []).filter((step: Row) => step.phase === 'failed').length, 0),
+    invalid_downloads: scopedJobs.reduce((total, job) => total + Number(job.invalid_downloads || 0), 0),
+    recent_failures: scopedJobs.filter((job) => job.error).slice(0, 3).map((job) => ({ task_no: job.task_no, message: job.error })),
+  };
   return (
     <>
       <div className="buttons" role="group" aria-label="生图任务类型" style={{ marginBottom: 16 }}>
         <Button variant={sourceEditMode ? 'outline' : 'default'} disabled={busy} onClick={() => setSourceEditMode(false)}>套图生成</Button>
         <Button variant={sourceEditMode ? 'default' : 'outline'} disabled={busy} onClick={() => setSourceEditMode(true)}>原图一对一修复</Button>
       </div>
-      {sourceEditMode ? <ImageSourceEdit onBusy={setBusy} onStarted={() => { void load().catch(() => {}); setTaskFilter('pending'); }} /> : <section className="panel">
+      {sourceEditMode ? <ImageSourceEdit onBusy={setBusy} onStarted={() => { void load().catch(() => {}); setTaskFilter('pending'); setBatchSelection('latest'); }} /> : <section className="panel">
         {connectionError && <p role="alert" style={{ color: '#b42318' }}>{connectionError}</p>}
-        <h2>设置一次，依次生成整批{singleImage ? '主图' : '套图'}</h2>
-        <p>
+        <h2>{professional ? '设置一次，依次生成整批' : '创建生图任务 · '}{singleImage ? '主图' : '套图'}</h2>
+        {professional ? <p>
           {sequential
             ? singleImage
               ? '每款在一个独立聊天中，用固定底图和本款印花生成 1 张主图。保存并校验通过后本款结束，再按账号原有冷却规则接下一款。'
               : `每款在一个独立聊天中，逐张完成 ${(selectedPreset?.steps || []).map((step: Row) => step.label).join('、')}共 ${selectedStepCount} 张图。每张只上传当前模板与印花依据；后续图片统一参考本款主图，同一浏览器执行整套。`
             : '旧模式：每款独立新对话，一次上传参考图和模板 ZIP；整套保存后按原账号冷却规则继续。'}
-        </p>
+        </p> : <p className="panelnote">选择预设和目录，扫描确认后开始。{selectedPreset ? `每款生成 ${selectedStepCount} 张图片。` : ''}</p>}
         <label className="field">
           <span>工作流预设</span>
           <select aria-label="工作流预设" value={form.workflow_id} onChange={(e) => {
@@ -569,10 +611,10 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
           }}>
             {workflowPresets.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
             {!workflowPresets.length && <option value="flannel-blanket-chat-v1">正在读取逐张预设…</option>}
-            <option value="legacy_zip">原模板 ZIP 模式（保留旧任务）</option>
+            {(professional || !sequential) && <option value="legacy_zip">原模板 ZIP 模式（保留旧任务）</option>}
           </select>
         </label>
-        {sequential && <>
+        {sequential && professional && <>
           {!singleImage && <label className="field"><span>本张保存后，等待多久开始下一张</span>
             <select aria-label="本张保存后，等待多久开始下一张" value={form.step_delay_seconds} onChange={(e) => setForm((f) => ({ ...f, step_delay_seconds: Number(e.target.value) }))}>
               <option value={30}>30 秒</option><option value={60}>60 秒</option>
@@ -609,6 +651,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             <label className="field" key={key}>
               <span>{label}</span>
               <Input
+                aria-label={key === 'folders' ? '印花目录' : key === 'output_folder' ? '生成图片保存目录' : '模板 ZIP 完整路径'}
                 value={(form as Row)[key]}
                 placeholder={
                   key === 'template'
@@ -623,11 +666,11 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             </label>
           ))}
         </div>
-        {!sequential && <p className="panelnote">
+        {!sequential && professional && <p className="panelnote">
           每个任务默认上传目录中的一张主参考图和模板 ZIP。还可以在下方添加额外参考图；ZIP
           内至少包含一张模板图，模板图片数量不设固定限制。
         </p>}
-        <label>
+        {professional && <label>
           <input
             type="checkbox"
             checked={form.recursive}
@@ -637,8 +680,8 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             }}
           />{' '}
           包含印花子文件夹
-        </label>
-        <fieldset className="formstack">
+        </label>}
+        <fieldset className="formstack" style={{ display: professional ? undefined : 'none' }}>
           <legend>④ 本批调度模式：选择参与生图的浏览器</legend>
           <div className="buttons">
             {Object.entries(browserNames).map(([browser, label]) => (
@@ -664,7 +707,8 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             <p role="alert">请至少选择一个参与浏览器。</p>
           )}
         </fieldset>
-        {!sequential && <details open>
+        {!professional && !form.browsers.length && <p role="alert">还未选择生图浏览器，请切换专业模式选择一次。</p>}
+        {!sequential && professional && <details open>
           <summary>⑤ 额外参考图（可选，最多 7 张）</summary>
           <p>
             这里添加的图片会和目录中的主参考图、模板 ZIP 一起发送给 GPT。每个任务最多包含 8 张参考图；适合正反面、细节图、风格图等需要共同参考的场景。
@@ -699,7 +743,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             当前每个任务将发送 {1 + form.extra_references.length} 张参考图＋1 个模板 ZIP，共 {2 + form.extra_references.length} 个附件。
           </p>
         </details>}
-        <details open>
+        {professional && <details open>
           <summary>⑥ 附加固定图（可选）</summary>
           <p>
             选择尺寸图、材质说明等通用图片，每款生成完成后原样附加，并自动接在生成图之后编号，不会发给
@@ -730,8 +774,8 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
               </button>
             </p>
           ))}
-        </details>
-        {!sequential && <details>
+        </details>}
+        {!sequential && <details style={{ display: professional ? undefined : 'none' }}>
           <summary>提示词与产品设置（保留上次提示词）</summary>
           <select
             value={form.category}
@@ -748,7 +792,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             disabled={busy || !form.folders}
             onClick={() => batch()}
           >
-            扫描印花，自动填入队列
+            {professional ? '扫描印花，自动填入队列' : '扫描目录'}
           </Button>
           <Button
             disabled={
@@ -768,9 +812,9 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
         {preview && (
           <>
             <h3>待生成 {preview.count} 款 · {sequential ? singleImage ? '每款 1 张主图，保存后本款结束' : `每款 ${selectedStepCount} 张，单图逐轮、同一聊天` : '每款按模板图片数量生成'}</h3>
-            <p>
+            {professional && <p>
               任务名称自动采用“创建时间-排队序号”，不需要手动填写；结果按任务分别保存。
-            </p>
+            </p>}
             <div style={{ maxHeight: 280, overflow: 'auto' }}>
               <table>
                 <thead>
@@ -783,7 +827,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
                   {preview.files.map((f: Row, i: number) => (
                     <tr key={f.path}>
                       <td>{String(i + 1).padStart(3, '0')}</td>
-                      <td>{f.path}</td>
+                      <td title={f.path}>{professional ? f.path : f.path.split(/[\\/]/).pop()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -796,14 +840,14 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
       <section className="panel">
         <div className="sectionhead">
           <div>
-            <h2>任务审核</h2>
-            <p>未完成与已完成分开展示。先看状态、时间和成品，再展开步骤审核；时间均为北京时间。</p>
+            <h2>{professional ? '任务审核' : '本轮进度'}</h2>
+            {professional && <p>未完成与已完成分开展示。先看状态、时间和成品，再展开步骤审核；时间均为北京时间。</p>}
           </div>
-          <div className="buttons">
+          {professional && <div className="buttons">
             {confirmReset ? (
               <>
                 <Button variant="outline" disabled={busy} onClick={resetAll}>
-                  确认重置全部任务（{jobs.length}）
+                  确认重置全部历史任务（{jobs.length}）
                 </Button>
                 <Button variant="ghost" onClick={() => setConfirmReset(false)}>
                   取消
@@ -811,7 +855,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
               </>
             ) : (
               <Button variant="outline" disabled={busy || !jobs.length} onClick={() => setConfirmReset(true)}>
-                重置全部任务
+                重置全部历史任务
               </Button>
             )}
             {confirmClear ? (
@@ -823,7 +867,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
                 >
                   {confirmClear === 'selected'
                     ? `确认清除选中的已结束记录（${selectedIds.length}）`
-                    : '确认清除全部已结束记录'}
+                    : '确认清除全部历史已结束记录'}
                 </Button>
                 <Button
                   variant="ghost"
@@ -839,12 +883,12 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
                 disabled={busy || !jobs.length}
                 onClick={() => setConfirmClear('all')}
               >
-                清除全部已结束记录
+                清除全部历史已结束记录
               </Button>
             )}
-          </div>
+          </div>}
         </div>
-        <details ref={repairSection} style={{ marginBottom: 20 }}>
+        <details ref={repairSection} style={{ marginBottom: 20, display: professional ? undefined : 'none' }}>
           <summary><strong>部分修改／补图</strong> · 按任务名称或批次处理毛衣套图</summary>
           <p>保留已完成的正面、背面和咖啡馆三张，只补衣架展示或重做平铺图。修复结果单独保存，原任务与原成图保留。</p>
           <div className="formgrid">
@@ -907,44 +951,63 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             {!!repairResult.errors?.length && <ul role="alert">{repairResult.errors.map((item: Row, index: number) => <li key={item.id || index}>{item.title || item.id}：{item.error}</li>)}</ul>}
           </div>}
         </details>
+        <label className="field" style={{ maxWidth: 380 }}>
+          <span>查看批次</span>
+          <select aria-label="查看生图批次" value={validBatchSelection}
+            onChange={(event) => { setBatchSelection(event.target.value); setSelectedIds([]); setTaskPages({ pending: 1, saved: 1 }); }}>
+            <option value="latest">本轮（最新批次）{latestBatch ? ' · ' + batchLabel(latestBatch) : ''}</option>
+            {batches.map((batch) => <option key={batch} value={batch}>{batchLabel(batch)}</option>)}
+            {professional && <option value="all">全部历史任务</option>}
+          </select>
+        </label>
+        {!professional && <>
+          <div className="metricgrid simple-task-stats" aria-label="本轮任务概况" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+            <div><strong>{scopedJobs.length}</strong><span>任务总数</span></div>
+            <div className="success-count"><strong>{successful}</strong><span>成功</span></div>
+            <div className="failure-count"><strong>{failed + needsReview}</strong><span>失败</span>{needsReview > 0 && <small>含待核对 {needsReview}</small>}</div>
+          </div>
+          <p className="panelnote">执行中 {active} · 排队 {queued}{paused ? ` · 已暂停 ${paused}` : ''}</p>
+          {(failed > 0 || needsReview > 0) && <output className="panelnote" style={{ display: 'block' }}>{failed + needsReview} 个任务未正常完成{needsReview ? `，其中 ${needsReview} 个需要核对原聊天` : ''}。可在下方选择“失败”查看。</output>}
+        </>}
         <div className="buttons" aria-label="任务分类">
           {([
-            ['all', '全部', jobs.length],
-            ['pending', '未完成', jobs.filter((j) => j.batch_phase !== 'saved').length],
-            ['saved', '已完成', summary.saved_jobs || 0],
-            ['failed', '失败', summary.failed || 0],
-            ['needs_review', '待复核', summary.needs_review || 0],
+            ['all', '全部', scopedJobs.length],
+            ['pending', '未完成', scopedJobs.length - successful],
+            ['saved', '已完成', successful],
+            [professional ? 'failed' : 'issues', '失败', professional ? failed : failed + needsReview],
+            ...(professional ? [['needs_review', '待复核', needsReview] as const] : []),
+            ...(professional && taskFilter === 'issues' ? [['issues', '失败与待核对', failed + needsReview] as const] : []),
           ] as const).map(([key, label, count]) => (
             <Button
               key={key}
-              variant={taskFilter === key ? 'default' : 'outline'}
+              variant={displayFilter === key ? 'default' : 'outline'}
               onClick={() => { setTaskFilter(key); setSelectedIds([]); setTaskPages({ pending: 1, saved: 1 }); }}
             >
               {label}（{count}）
             </Button>
           ))}
-          {taskFilter === 'failed' && (
-            <Button disabled={busy || !summary.failed} onClick={retryFailed}>
-              一键重试全部失败任务
+          {professional && taskFilter === 'failed' && (
+            <Button disabled={busy || !failed} onClick={retryFailed}>
+              重试本范围失败任务
             </Button>
           )}
         </div>
-        <div className="metricgrid" aria-label="任务总览">
-          <div><strong>{summary.total_jobs || jobs.length}</strong><span>创建任务</span></div>
-          <div><strong>{summary.sent_jobs || 0}</strong><span>已发送到 GPT</span></div>
-          <div><strong>{summary.sent_today || 0}</strong><span>今日新发送</span></div>
-          <div><strong>{summary.saved_jobs || 0}/{summary.total_jobs || jobs.length}</strong><span>已完成任务</span></div>
-          <div><strong>{summary.saved_images || 0}/{summary.expected_images || 0}</strong><span>已保存图片</span></div>
-          <div><strong>{summary.queued || 0}</strong><span>排队中</span></div>
-          <div><strong>{summary.active || 0}</strong><span>执行中</span></div>
-          <div><strong>{summary.failed || 0}</strong><span>失败</span></div>
-          <div><strong>{summary.failed_steps || 0}</strong><span>失败图片</span></div>
-          <div><strong>{summary.needs_review || 0}</strong><span>待复核</span></div>
-            <div><strong>{summary.invalid_downloads || 0}</strong><span>误收原图</span></div>
-        </div>
-        {!!summary.recent_failures?.length && (
+        {professional && <div className="metricgrid" aria-label="任务总览">
+          <div><strong>{metrics.total_jobs || 0}</strong><span>创建任务</span></div>
+          <div><strong>{metrics.sent_jobs || 0}</strong><span>已发送到 GPT</span></div>
+          <div><strong>{metrics.sent_today || 0}</strong><span>今日新发送</span></div>
+          <div><strong>{metrics.saved_jobs || 0}/{metrics.total_jobs || 0}</strong><span>已完成任务</span></div>
+          <div><strong>{metrics.saved_images || 0}/{metrics.expected_images || 0}</strong><span>已保存图片</span></div>
+          <div><strong>{metrics.queued || 0}</strong><span>排队中</span></div>
+          <div><strong>{metrics.active || 0}</strong><span>执行中</span></div>
+          <div><strong>{metrics.failed || 0}</strong><span>失败</span></div>
+          <div><strong>{metrics.failed_steps || 0}</strong><span>失败图片</span></div>
+          <div><strong>{metrics.needs_review || 0}</strong><span>待复核</span></div>
+            <div><strong>{metrics.invalid_downloads || 0}</strong><span>误收原图</span></div>
+        </div>}
+        {professional && !!metrics.recent_failures?.length && (
           <div className="panelnote">
-            最近失败：{summary.recent_failures.slice(0, 3).map((failure: Row) => `${failure.task_no || '未知任务'}：${failure.message || '未记录原因'}`).join('；')}
+            最近失败：{metrics.recent_failures.slice(0, 3).map((failure: Row) => `${failure.task_no || '未知任务'}：${failure.message || '未记录原因'}`).join('；')}
           </div>
         )}
         <div className="buttons">
@@ -968,7 +1031,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
           >
             批量暂停
           </Button>
-          <Button variant="outline" disabled={busy || !selectedIds.length} onClick={() => previewRepairs(selectedIds)}>
+          {professional && <><Button variant="outline" disabled={busy || !selectedIds.length} onClick={() => previewRepairs(selectedIds)}>
             部分修改选中任务
           </Button>
           <Button
@@ -999,7 +1062,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
             >
               批量删除选中任务
             </Button>
-          )}
+          )}</>}
           {!!selectedIds.length && (
             <Button variant="ghost" onClick={() => setSelectedIds([])}>
               取消选择
@@ -1018,7 +1081,7 @@ export default function ImageQueue({ draft }: { draft?: Row }) {
           const pageRows = rows.slice((page - 1) * 20, page * 20);
           return <section className="image-task-group" key={group} aria-label={group === 'saved' ? '已完成任务' : '未完成任务'}>
             <div className="image-task-group-head"><h3>{group === 'saved' ? '已完成' : '未完成'} <span className={'tag ' + (group === 'saved' ? 'green' : 'amber')}>{rows.length}</span></h3>
-              <p>{group === 'saved' ? '审核成品，可重发整套或只重做指定步骤。' : '排队、执行中、暂停、失败和待核对的任务。'}</p></div>
+              {professional && <p>{group === 'saved' ? '审核成品，可重发整套或只重做指定步骤。' : '排队、执行中、暂停、失败和待核对的任务。'}</p>}</div>
             {!rows.length && <p className="image-task-group-empty">{taskQuery ? '没有匹配的任务。' : group === 'saved' ? '暂无已完成任务。' : '暂无未完成任务。'}</p>}
             {pageRows.map((j) => <ImageTaskCard key={j.id} job={j} busy={busy} canAssign={!!form.browsers.length}
               selected={selectedIds.includes(j.id)} onSelect={(checked) => setSelectedIds((ids) => checked ? [...ids, j.id] : ids.filter((id) => id !== j.id))}

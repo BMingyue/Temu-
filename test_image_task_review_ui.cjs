@@ -39,6 +39,7 @@ const result={at:new Date().toISOString(),mode:'headless isolated browser; all w
     });
     await page.goto('http://127.0.0.1:5173/',{waitUntil:'domcontentloaded',timeout:45000});
     await page.locator('.connection.connected').waitFor();
+    await page.getByRole('group',{name:'工作模式',exact:true}).getByRole('button',{name:'专业模式',exact:true}).click();
     await page.getByRole('button',{name:'上新',exact:true}).click();await page.getByRole('button',{name:'GPT 批量生图',exact:true}).click();
     const pending=page.getByRole('region',{name:'未完成任务',exact:true});
     const done=page.getByRole('region',{name:'已完成任务',exact:true});

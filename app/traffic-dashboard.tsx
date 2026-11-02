@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
+import {useWorkbenchMode} from './workbench-mode';
 import {
   Area,
   AreaChart,
@@ -69,6 +70,7 @@ export default function TrafficDashboard({
   preferredStore?: string;
   preferredClient?: string;
 }) {
+  const {professional} = useWorkbenchMode();
   const [historical, setHistorical] = useState(false),
     [historyDay, setHistoryDay] = useState(''),
     [historyId, setHistoryId] = useState(''),
@@ -381,7 +383,7 @@ export default function TrafficDashboard({
         {autoState?.flow_error && <p role="status">自动流量提示：{autoState.flow_error}</p>}
         {syncMessage && <p role="status">{syncMessage}</p>}
       </div>
-      <details className="tt-audit" open>
+      {professional&&<details className="tt-audit" open>
         <summary>当前店铺最近采集记录（北京时间）</summary>
         {recentTasks.map((task: Row) => (
           <p key={task.id}>
@@ -419,7 +421,7 @@ export default function TrafficDashboard({
             所选店铺暂无近期流量入库回执。可以点击“立即采集并同步”，命令只会由登录这家店的浏览器领取。
           </p>
         )}
-      </details>
+      </details>}
       {error && (
         <p role="alert" className="tt-notice">
           {error}；以下保留上次读取结果。
@@ -610,10 +612,10 @@ export default function TrafficDashboard({
           )}
         </div>
       </div>
-      <p className="tt-note">
+      {professional&&<p className="tt-note">
         实时为采集时累计值，每 15 秒读取本机最新同步；开启自动更新且商家后台在线时每 2 小时采集一次。汇总与趋势分次采集，可能存在时间差。图中保留平台原始值，缺失值不补零；暂无有效数据的范围保留上次结果并显示提示。
-      </p>
-      <details className="tt-audit">
+      </p>}
+      {professional&&<details className="tt-audit">
         <summary>核对采集详情与原始数据</summary>
         <p>
           店铺：{selected || '未采集'} · 范围：
@@ -630,7 +632,7 @@ export default function TrafficDashboard({
           组。比率、环比直接使用后台字段；没有从订单或商品明细反推。
         </p>
         <pre>{row ? JSON.stringify(data, null, 2) : '未采集'}</pre>
-      </details>
+      </details>}
     </section>
   );
 }
