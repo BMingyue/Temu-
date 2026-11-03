@@ -6,6 +6,9 @@
  const ASSISTANT_SELECTOR='[data-message-author-role="assistant"],[class~="group/assistant-message"],[class~="group/agent-message"],[class~="group/generated-image-preview"]';
  const DIALOG_SELECTOR='dialog,[role="dialog"],[role="alertdialog"]';
  const ATTACHMENT_EXCLUDED=USER_SELECTOR+','+ASSISTANT_SELECTOR+','+DIALOG_SELECTOR;
+ const COMPOSER_OVERLAY='[data-composer-overlay-floating-ui="true"]';
+ const ADD_CONTEXT='button[data-composer-navigation-target="add-context"]';
+ const ATTACHMENT_EVIDENCE_EXCLUDED=ATTACHMENT_EXCLUDED+','+COMPOSER_OVERLAY;
  function messageTurns(selector,root=document,includeUnrendered=false){
   const nodes=[...root.querySelectorAll(selector)].filter(el=>includeUnrendered||!el.getClientRects||visible(el));
   return nodes.filter(el=>!nodes.some(other=>other!==el&&el.contains?.(other)));
@@ -21,25 +24,45 @@
   const names=['添加文件等内容','添加文件等','添加照片和文件','添加照片/文件','添加文件','添加附件','上传文件','Add files','Attach files','Upload files','Add photos and files','Upload from computer'];
   const box=typeof document.querySelector==='function'?composer():null,scope=box?attachmentScope():null;
   if(typeof document.querySelector==='function'&&!box)return null;
-  const controls=[...document.querySelectorAll('button,[role="menuitem"]')].filter(element=>visible(element)&&!element.closest?.(ATTACHMENT_EXCLUDED)&&(!scope||scope.contains(element)));
+  const controls=[...document.querySelectorAll('button,[role="menuitem"]')].filter(element=>visible(element)&&!element.closest?.(ATTACHMENT_EXCLUDED)&&!element.closest?.(COMPOSER_OVERLAY)&&(!scope||scope.contains(element)));
+  const marked=controls.filter(element=>element.matches?.(ADD_CONTEXT));
+  if(marked.length)return marked.length===1?marked[0]:null;
   const named=controls.find(el=>names.some(name=>label(el).toLowerCase()===name.toLowerCase()))||controls.find(el=>names.some(name=>label(el).toLowerCase().startsWith(name.toLowerCase())));
   if(named)return named;
   const form=composer()?.closest('form');if(!form)return null;
-  return [...form.querySelectorAll('button,[role="button"]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)).find(el=>{
+  return [...form.querySelectorAll('button,[role="button"]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)&&!el.closest(COMPOSER_OVERLAY)).find(el=>{
    const hint=[label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ');
    return /^(?:\+|添加|add)$/i.test(hint)||/composer.*(?:plus|attach|upload)|(?:plus|attach|upload).*composer/i.test(hint);
   })||null;
  }
+ function composerUploadOverlay(control){
+  const scope=attachmentScope();if(!scope||!control.matches?.(ADD_CONTEXT)||!scope.contains(control)||uploadActionDisabled(control)||control.closest(ATTACHMENT_EXCLUDED+','+COMPOSER_OVERLAY)||control.getAttribute('aria-expanded')!=='true'||control.getAttribute('data-state')!=='open')return null;
+  const entries=[...scope.querySelectorAll(ADD_CONTEXT)].filter(element=>visible(element)&&!element.closest(ATTACHMENT_EXCLUDED+','+COMPOSER_OVERLAY));
+  if(entries.length!==1||entries[0]!==control)return null;
+  const openEntries=[...document.querySelectorAll(ADD_CONTEXT)].filter(element=>visible(element)&&!element.closest(ATTACHMENT_EXCLUDED+','+COMPOSER_OVERLAY)&&(element.getAttribute('aria-expanded')==='true'||element.getAttribute('data-state')==='open'));
+  if(openEntries.length!==1||openEntries[0]!==control)return null;
+  const overlays=[...document.querySelectorAll(COMPOSER_OVERLAY)].filter(visible);
+  if(overlays.length!==1||overlays[0].closest(ATTACHMENT_EXCLUDED))return null;
+  const overlay=overlays[0],sections=[...overlay.querySelectorAll('[data-mention-section-id="chatgpt-primary"]')].filter(element=>visible(element)&&!element.closest(ATTACHMENT_EXCLUDED));
+  if(sections.length!==1)return null;
+  const section=sections[0],items=[...(section.matches('[data-mention-section-items="true"]')?[section]:[]),...section.querySelectorAll('[data-mention-section-items="true"]')].filter(element=>visible(element)&&!element.closest(ATTACHMENT_EXCLUDED)&&element.closest('[data-mention-section-id]')===section);
+  return items.length===1?{overlay,section,items:items[0]}:null;
+ }
  function uploadMenu(control,beforeVisible,createdDuringClick=null){
   const scope=attachmentScope(),declared=(control.getAttribute('aria-controls')||'').split(/\s+/).filter(Boolean),owned=declared.map(id=>document.getElementById(id)).filter(Boolean);
   if(control.id)owned.push(...[...document.querySelectorAll('[role="menu"],[role="listbox"]')].filter(menu=>(menu.getAttribute('aria-labelledby')||'').split(/\s+/).includes(control.id)));
+  const composerOverlay=declared.length||owned.length?null:composerUploadOverlay(control);
   const related=element=>{
-   return declared.length||owned.length?owned.some(parent=>parent.contains(element)):scope?.contains(element)||createdDuringClick?.has(element)&&!beforeVisible.has(element);
+   if(declared.length||owned.length)return owned.some(parent=>parent.contains(element));
+   if(element.closest(COMPOSER_OVERLAY))return Boolean(composerOverlay&&element.matches('button[data-list-navigation-item="true"]')&&element.closest(COMPOSER_OVERLAY)===composerOverlay.overlay&&element.closest('[data-mention-section-id]')===composerOverlay.section&&element.closest('[data-mention-section-items="true"]')===composerOverlay.items&&element.querySelector('[data-menu-row-content="true"]'));
+   return scope?.contains(element)||createdDuringClick?.has(element)&&!beforeVisible.has(element);
   };
-  // Visible block subtitles have a line break in innerText, while textContent
-  // can join the title and subtitle without a separator.
+  // Read only the local semantic menu text. Skipped rendering can make
+  // innerText empty; raw fallback text would include SVG style-sheet text.
   const menuLabel=element=>{
-   const text=String(element.getAttribute('aria-label')||element.innerText||element.textContent||'').trim();
+   let content=element.textContent||'';
+   if(element.cloneNode){const copy=element.cloneNode(true);copy.querySelectorAll('svg,style,script,[aria-hidden="true"]').forEach(node=>node.remove());content=copy.textContent||'';}
+   const text=String(element.getAttribute('aria-label')||content).trim();
    if(text.startsWith('添加照片和文件')){
     const compact=text.replace(/\s+/g,'');
     return compact==='添加照片和文件'?'添加照片和文件':compact==='添加照片和文件从计算机上传'?'添加照片和文件 从计算机上传':'';
@@ -77,7 +100,7 @@
  function uploadInput(localOnly=false,task=null){
   const scope=attachmentScope(),form=composer()?.closest('form');
   const local=input=>Boolean(scope?.contains(input)||form&&input.form===form);
-  const inputs=[...document.querySelectorAll('input[type="file"]')].filter(input=>uploadInputEligible(input,task)&&(!localOnly||local(input))&&(!task||local(input)));
+  const inputs=[...document.querySelectorAll('input[type="file"]')].filter(input=>uploadInputEligible(input,task)&&!input.closest(COMPOSER_OVERLAY)&&(!localOnly||local(input))&&(!task||local(input)));
   // More than one compatible local control requires observing the actual
   // owned upload click. MIME/multiple ranking does not establish ownership.
   return inputs.length===1?inputs[0]:null;
@@ -88,7 +111,7 @@
   const owned=box&&scope&&visible(control)&&!uploadActionDisabled(control)&&!control.closest(ATTACHMENT_EXCLUDED)&&(menuContext?uploadMenu(menuContext.control,menuContext.beforeVisible,menuContext.createdDuringClick)===control:uploadControl()===control);
   if(!owned)throw attachmentFailure(task,'无法确认当前上传控件属于本步骤输入框，已停止选择文件');
   if(composerText(box).trim())throw attachmentFailure(task,'当前输入框已有草稿，已停止选择文件');
-  if(composerAttachmentSnapshot(scope).cards.length||[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].some(node=>!node.closest(ATTACHMENT_EXCLUDED)))throw attachmentFailure(task,'当前输入框已有附件，已停止重新选择文件');
+  if(composerAttachmentSnapshot(scope).cards.length||[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].some(node=>!node.closest(ATTACHMENT_EVIDENCE_EXCLUDED)))throw attachmentFailure(task,'当前输入框已有附件，已停止重新选择文件');
   const observed=[];
   const capture=event=>{
    const input=event.target;
@@ -123,7 +146,14 @@
   const cancel=event=>{if(event.isTrusted)interrupted=true};
   const verify=()=>{
    if(interrupted)throw workflowFailure('用户正在操作当前页面，已取消本次附件选择；请确认草稿和菜单后再继续','workflow_upload_interrupted');
-   if(!box||composer()!==box||box.isConnected===false||control.isConnected===false||uploadActionDisabled(control)||uploadControl()!==control||attachmentKey(task)!==key||composerText(box).trim())throw attachmentFailure(task,'打开附件菜单期间输入框、本步骤、上传控件或草稿已变化或控件已禁用，已停止上传');
+   if(!box)throw attachmentFailure(task,'打开附件菜单前未找到 GPT 输入框，已停止上传');
+   if(box.isConnected===false)throw attachmentFailure(task,'打开附件菜单期间原 GPT 输入框已从页面移除，已停止上传');
+   if(composer()!==box)throw attachmentFailure(task,'打开附件菜单期间 GPT 输入框节点已变化，已停止上传');
+   if(control.isConnected===false)throw attachmentFailure(task,'打开附件菜单期间添加文件按钮已从页面移除，已停止上传');
+   if(uploadActionDisabled(control))throw attachmentFailure(task,'打开附件菜单期间添加文件控件已禁用，已停止上传');
+   if(uploadControl()!==control)throw attachmentFailure(task,'打开附件菜单期间添加文件入口已变化或不唯一，已停止上传');
+   if(attachmentKey(task)!==key)throw attachmentFailure(task,'打开附件菜单期间本步骤身份已变化，已停止上传');
+   if(composerText(box).trim())throw attachmentFailure(task,'打开附件菜单期间输入框出现其他草稿，已停止上传');
   };
   const opened=()=>Boolean(uploadMenu(control,beforeVisible,createdDuringClick))||control.getAttribute('aria-expanded')==='true'||control.getAttribute('data-state')==='open';
   for(const type of events)document.addEventListener(type,cancel,true);
@@ -163,13 +193,13 @@
  }
  function composer(){
   const primary=document.querySelector('#prompt-textarea');
-  if(primary&&visible(primary)&&!primary.closest(DIALOG_SELECTOR)&&(primary.isContentEditable||primary.tagName==='TEXTAREA'))return primary;
+  if(primary&&visible(primary)&&!primary.closest(DIALOG_SELECTOR+','+COMPOSER_OVERLAY)&&(primary.isContentEditable||primary.tagName==='TEXTAREA'))return primary;
   const candidates=[...document.querySelectorAll('[contenteditable="true"],textarea,[data-testid="textbox"]')];
   return candidates.find(el=>{
-   if(!visible(el)||el.closest(DIALOG_SELECTOR))return false;
+   if(!visible(el)||el.closest(DIALOG_SELECTOR+','+COMPOSER_OVERLAY))return false;
    const hint=[el.getAttribute('aria-label'),el.getAttribute('placeholder'),el.getAttribute('data-testid')].filter(Boolean).join(' ');
    return /与 ChatGPT 聊天|message chatgpt|ask anything|发送消息|message|prompt|textbox|聊天/i.test(hint)||el.matches('[contenteditable="true"][data-lexical-editor="true"]');
-  })||candidates.find(el=>visible(el)&&!el.closest(DIALOG_SELECTOR))||null;
+  })||candidates.find(el=>visible(el)&&!el.closest(DIALOG_SELECTOR+','+COMPOSER_OVERLAY))||null;
  }
  function loginPromptVisible(){return [...document.querySelectorAll('button,a,[role="button"]')].some(el=>{
   if(!visible(el))return false;
@@ -265,17 +295,17 @@
   return String(text||'').split(/\r?\n/).some(value=>expected.test(value.trim().replace(/^(?:(?:remove|delete|preview|download|file|image|attachment|移除|删除|预览|下载|文件|图片|附件)[\s:：]+){1,3}/i,'').replace(/\s+(?:[·•–—]\s*)?\d+(?:\.\d+)?\s*(?:B|KB|MB|GB)\s*$/i,'')));
  }
  function attachmentText(element){
-  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[alt],[data-file-name],[data-filename]')||[])].filter(node=>!node.closest?.(ATTACHMENT_EXCLUDED));
+  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[alt],[data-file-name],[data-filename]')||[])].filter(node=>!node.closest?.(ATTACHMENT_EVIDENCE_EXCLUDED));
   return [attachmentLocalText(element),...nodes.flatMap(node=>['aria-label','title','alt','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].filter(Boolean).join('\n');
  }
  function primaryAttachmentNames(element){
-  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[data-file-name],[data-filename]')||[])].filter(node=>!node.closest?.(ATTACHMENT_EXCLUDED));
+  const nodes=[element,...(element.querySelectorAll?.('[aria-label],[title],[data-file-name],[data-filename]')||[])].filter(node=>!node.closest?.(ATTACHMENT_EVIDENCE_EXCLUDED));
   return [attachmentLocalText(element),...nodes.flatMap(node=>['aria-label','title','data-file-name','data-filename'].map(name=>node.getAttribute?.(name)||''))].flatMap(value=>String(value).split(/\r?\n/)).filter(value=>/\.[a-z][a-z0-9]{0,11}(?:\b|$)/i.test(value));
  }
  function attachmentLocalText(element){
-  if(!element||element.closest?.(ATTACHMENT_EXCLUDED))return '';
-  if(!element.cloneNode||!element.querySelector?.(ATTACHMENT_EXCLUDED))return element.innerText||element.textContent||'';
-  const clone=element.cloneNode(true);clone.querySelectorAll(ATTACHMENT_EXCLUDED).forEach(node=>node.remove());
+  if(!element||element.closest?.(ATTACHMENT_EVIDENCE_EXCLUDED))return '';
+  if(!element.cloneNode||!element.querySelector?.(ATTACHMENT_EVIDENCE_EXCLUDED))return element.innerText||element.textContent||'';
+  const clone=element.cloneNode(true);clone.querySelectorAll(ATTACHMENT_EVIDENCE_EXCLUDED).forEach(node=>node.remove());
   clone.querySelectorAll('div,p,li,section,article,button,br').forEach(node=>{node.before('\n');node.after('\n')});
   return clone.textContent||'';
  }
@@ -294,8 +324,8 @@
  }
  function composerAttachmentSnapshot(scope=attachmentScope()){
   if(!scope)return {cards:[],rawImages:0,rawMarkers:0,imageCount:0};
-  const local=element=>visible(element)&&!element.closest?.(ATTACHMENT_EXCLUDED);
-  const rawMarked=[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(visible),marked=rawMarked.filter(local);
+  const local=element=>visible(element)&&!element.closest?.(ATTACHMENT_EVIDENCE_EXCLUDED);
+  const rawMarked=[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(element=>visible(element)&&!element.closest(COMPOSER_OVERLAY)),marked=rawMarked.filter(local);
   // One file can expose both test ids, and one outer group can contain several
   // files. Collapse single-file ancestor chains, never multi-file groups.
   const leaves=marked.filter(node=>!marked.some(child=>child!==node&&node.contains(child)));
@@ -309,7 +339,7 @@
    return /(?:^|[\s_-])avatar(?:$|[\s_-])|头像|profile picture/i.test(hint)||/账户|账号|个人资料|account|profile/i.test([control?.getAttribute?.('aria-label'),control?.getAttribute?.('title')].filter(Boolean).join(' '));
   };
   const rawImages=[...scope.querySelectorAll('img')].filter(img=>{
-   if(!visible(img))return false;
+   if(!visible(img)||img.closest(COMPOSER_OVERLAY))return false;
    const r=img.getBoundingClientRect();return r.width>=32&&r.height>=32&&r.width<=220&&r.height<=220;
   });
   const images=rawImages.filter(img=>local(img)&&!isAvatar(img));
@@ -377,11 +407,11 @@
   // Stay inside the nearest small composer wrapper; never expand through chat
   // turns, another editor, dialogs or page-level containers to count images.
   for(let parent=base.parentElement,depth=0;parent&&depth<3;parent=parent.parentElement,depth++){
-   if(parent.matches('body,main,html,[role="main"],'+DIALOG_SELECTOR)||parent.querySelector(USER_SELECTOR+','+ASSISTANT_SELECTOR))break;
-   const editors=[...parent.querySelectorAll('#prompt-textarea,[contenteditable="true"],textarea')].filter(editor=>visible(editor)&&!editor.closest(ATTACHMENT_EXCLUDED));
+   if(parent.matches('body,main,html,[role="main"],'+DIALOG_SELECTOR+','+COMPOSER_OVERLAY)||parent.querySelector(USER_SELECTOR+','+ASSISTANT_SELECTOR))break;
+   const editors=[...parent.querySelectorAll('#prompt-textarea,[contenteditable="true"],textarea')].filter(editor=>visible(editor)&&!editor.closest(ATTACHMENT_EVIDENCE_EXCLUDED));
    if(editors.some(editor=>editor!==box&&!box.contains(editor)&&!editor.contains(box)))break;
-   const outside=[...parent.querySelectorAll(ATTACHMENT_SELECTOR)].some(node=>!scope.contains(node)&&!node.closest(ATTACHMENT_EXCLUDED));
-   const uploader=[...parent.querySelectorAll('button,[role="button"]')].some(node=>!scope.contains(node)&&visible(node)&&!node.closest(ATTACHMENT_EXCLUDED)&&/^(?:添加文件等内容|添加文件等|添加照片和文件|添加照片\/文件|添加文件|添加附件|上传文件|add files|attach files|upload files|add photos and files|upload from computer)$/i.test(label(node)));
+   const outside=[...parent.querySelectorAll(ATTACHMENT_SELECTOR)].some(node=>!scope.contains(node)&&!node.closest(ATTACHMENT_EVIDENCE_EXCLUDED));
+   const uploader=[...parent.querySelectorAll('button,[role="button"]')].some(node=>!scope.contains(node)&&visible(node)&&!node.closest(ATTACHMENT_EVIDENCE_EXCLUDED)&&/^(?:添加文件等内容|添加文件等|添加照片和文件|添加照片\/文件|添加文件|添加附件|上传文件|add files|attach files|upload files|add photos and files|upload from computer)$/i.test(label(node)));
    if(outside||uploader)scope=parent;
   }
   return scope;
@@ -392,10 +422,10 @@
  }
  function attachmentState(task){
   const scope=attachmentScope();if(!scope)return {ready:false,count:0};
-  const elements=[scope,...scope.querySelectorAll('[aria-label],[title]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED));
+  const elements=[scope,...scope.querySelectorAll('[aria-label],[title]')].filter(el=>visible(el)&&!el.closest(ATTACHMENT_EVIDENCE_EXCLUDED));
   const searchable=[attachmentLocalText(scope),...elements.map(el=>[el.getAttribute?.('aria-label'),el.getAttribute?.('title')].filter(Boolean).join(' '))].join('\n');
   const snapshot=composerAttachmentSnapshot(scope);
-  const uploading=[...scope.querySelectorAll('[role="progressbar"],[data-testid*="uploading"],[aria-label*="上传中"],[aria-label*="Uploading"],[aria-busy="true"]')].some(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED));
+  const uploading=[...scope.querySelectorAll('[role="progressbar"],[data-testid*="uploading"],[aria-label*="上传中"],[aria-label*="Uploading"],[aria-busy="true"]')].some(el=>visible(el)&&!el.closest(ATTACHMENT_EVIDENCE_EXCLUDED));
   return attachmentEvidence(task,{searchable,imageCount:snapshot.imageCount,thumbnailCount:snapshot.cards.length,uploading,...snapshot});
  }
  function ownedComposer(task){
@@ -413,7 +443,7 @@
   }
   for(let attempt=0;attempt<4&&attachmentPresence();attempt++){
    const scope=attachmentScope();
-   const remove=[...scope.querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
+   const remove=[...scope.querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&!el.closest(ATTACHMENT_EVIDENCE_EXCLUDED)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
    if(!remove)break;
    remove.click();await sleep(500);
   }
@@ -455,7 +485,7 @@
   const items=attachmentItems(task),files=items.map(item=>file(item,uploadName(task,item)));
   if(composer()!==originalBox||originalBox.isConnected===false||attachmentKey(task)!==originalKey||composerText(originalBox).trim())throw attachmentFailure(task,'选择文件前输入框、本步骤或草稿已变化，已停止上传');
   const scope=attachmentScope(),before=composerAttachmentSnapshot(scope);
-  const hiddenOrVisibleMarkers=scope?[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(node=>!node.closest?.(ATTACHMENT_EXCLUDED)):[];
+  const hiddenOrVisibleMarkers=scope?[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].filter(node=>!node.closest?.(ATTACHMENT_EVIDENCE_EXCLUDED)):[];
   if(before.cards.length||hiddenOrVisibleMarkers.length)throw attachmentFailure(task,'当前输入框已有附件，已停止重新选择文件');
   const selection={key:attachmentKey(task),scope,form:composer()?.closest('form'),names:files.map(item=>item.name),emptyBeforeSelection:before.cards.length===0&&hiddenOrVisibleMarkers.length===0,at:Date.now()};
   selectedAttachments=null;
@@ -876,7 +906,7 @@
   if((text||attachmentPresence())&&owned){
    const box=composer();if(text&&box)clearComposerText(box);
    for(let count=0;count<8&&attachmentPresence();count++){
-    const remove=[...attachmentScope().querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&!el.closest(ATTACHMENT_EXCLUDED)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
+    const remove=[...attachmentScope().querySelectorAll('button,[role="button"]')].find(el=>visible(el)&&!el.closest(ATTACHMENT_EVIDENCE_EXCLUDED)&&/^(?:移除|删除|remove|delete)/i.test([label(el),el.getAttribute('title'),el.getAttribute('data-testid')].filter(Boolean).join(' ')));
     if(!remove)break;remove.click();await sleep(300);
    }
   }

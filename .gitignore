@@ -31,6 +31,12 @@
 !/gpt_chrome_extension/
 !/image_presets/
 !/maintenance/
+!/test_fixtures/
+/test_fixtures/*
+!/test_fixtures/gpt-upload-20261103/
+/test_fixtures/gpt-upload-20261103/*
+!/test_fixtures/gpt-upload-20261103/menu-button.html
+!/test_fixtures/gpt-upload-20261103/plus-button.html
 !/local_tools/
 /local_tools/*
 !/local_tools/qualification/
