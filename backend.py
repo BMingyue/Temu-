@@ -610,6 +610,7 @@ class Handler(BaseHTTPRequestHandler):
    if self.path=='/api/image-jobs/pause-selected': return self.reply(gpt_extension_bridge.pause_many(DATA,body.get('ids')))
    if self.path=='/api/image-jobs/reassign-selected': return self.reply(gpt_extension_bridge.reassign_many(DATA,body.get('ids'),body.get('browsers')))
    if self.path=='/api/gpt-browser-profiles/open': return self.reply(gpt_browser_profiles.open_profile(DATA,body.get('profile_id')))
+   if self.path=='/api/gpt-browser-profiles/close': return self.reply(gpt_browser_profiles.close_profile(DATA,body.get('profile_id')))
    if self.path=='/api/gpt-browser-profiles/create': return self.reply(gpt_browser_profiles.create_profiles(DATA,body))
    if self.path=='/api/image-runner': return self.reply(gpt_runner.get_runner(DATA).submit(body.get('action'),body.get('id')))
    if self.path=='/api/gpt-extension':

@@ -23,6 +23,8 @@ LEGACY_SWEATER_SET_PRESET = 'sweater-print-set-v2'
 LEGACY_SWEATER_PRESETS = (LEGACY_SWEATER_PRESET, LEGACY_SWEATER_SET_PRESET)
 SWEATER_PRESET = 'sweater-print-set-v3'
 BLANKET_PRESET = 'flannel-blanket-scenes-v1'
+PORCH_GOOSE_PRESET = 'porch-goose-ruffled-bonnet-set-v1'
+PORCH_GOOSE_BOW_DRESS_PRESET = 'porch-goose-bow-dress-set-v1'
 VERSION = '1.0.0'
 SETTINGS_LOCK = threading.RLock()
 STEPS = (
@@ -44,6 +46,18 @@ SWEATER_STEPS = (
     ('cafe', '咖啡馆穿搭', '04-cafe.png', '04-cafe.txt'),
     ('flatlay', '半高领平铺产品图', '05-flatlay.png', '05-flatlay.txt'),
 )
+PORCH_GOOSE_STEPS = (
+    ('main', '白底两件套主图', '01-main.png', '01-main.txt'),
+    ('details', '材质与印花细节图', '02-details.png', '02-details.txt'),
+    ('lifestyle', '户外生活方式场景图', '03-lifestyle.png', '03-lifestyle.txt'),
+    ('size', '23 英寸尺寸说明图', '04-size.png', '04-size.txt'),
+)
+PORCH_GOOSE_BOW_DRESS_STEPS = (
+    ('brand', '品牌进店主图', '01-brand.png', '01-brand.txt'),
+    ('scene', '门廊与花园场景图', '02-scene.png', '02-scene.txt'),
+    ('size_details', '尺寸与细节图', '03-size-details.png', '03-size-details.txt'),
+    ('indoor_outdoor', '室内外双场景图', '04-indoor-outdoor.png', '04-indoor-outdoor.txt'),
+)
 
 
 def is_workflow(job):
@@ -54,13 +68,20 @@ def preset(ident=DEFAULT_PRESET):
     # Old selectors resolve to the replacement; existing jobs keep their snapshots.
     if ident in LEGACY_SWEATER_PRESETS:
         ident = SWEATER_PRESET
-    if ident not in (DEFAULT_PRESET, TEST_PRESET, SWEATER_PRESET, BLANKET_PRESET):
+    if ident not in (DEFAULT_PRESET, TEST_PRESET, SWEATER_PRESET, BLANKET_PRESET,
+                     PORCH_GOOSE_PRESET, PORCH_GOOSE_BOW_DRESS_PRESET):
         raise ValueError('未知的逐张生图预设')
     sweater = ident == SWEATER_PRESET
     blanket = ident == BLANKET_PRESET
-    assets = (ROOT / 'image_presets' / 'flannel-blanket-scenes' if blanket else
+    porch_goose = ident == PORCH_GOOSE_PRESET
+    bow_dress = ident == PORCH_GOOSE_BOW_DRESS_PRESET
+    assets = (ROOT / 'image_presets' / 'porch-goose-bow-dress-set' if bow_dress else
+              ROOT / 'image_presets' / 'porch-goose-ruffled-bonnet-set' if porch_goose else
+              ROOT / 'image_presets' / 'flannel-blanket-scenes' if blanket else
               ROOT / 'image_presets' / 'sweater-print-set' if sweater else ASSETS)
-    definitions = BLANKET_STEPS if blanket else SWEATER_STEPS if sweater else STEPS
+    definitions = (PORCH_GOOSE_BOW_DRESS_STEPS if bow_dress else PORCH_GOOSE_STEPS if porch_goose else
+                   BLANKET_STEPS if blanket else
+                   SWEATER_STEPS if sweater else STEPS)
     steps = []
     for number, (key, label, image, text) in enumerate(definitions, 1):
         prompt_file = '01-turkey-test.txt' if ident == TEST_PRESET and number == 1 else text
@@ -71,9 +92,13 @@ def preset(ident=DEFAULT_PRESET):
         steps.append(dict(number=number, key=key, label=label, template=str(template),
                           template_name=image, prompt=prompt))
     return dict(id=ident, version=VERSION, mode=MODE,
-                label=('法兰绒毛毯 · 主图＋三场景' if blanket else '毛衣 · 正面＋背面＋衣架＋穿搭＋平铺' if sweater else
+                label=('门廊鹅蝴蝶结裙装 · 品牌主图＋场景＋尺寸细节＋室内外' if bow_dress else
+                       '门廊鹅花边圆帽毛衣 · 主图＋细节＋场景＋尺寸' if porch_goose else
+                       '法兰绒毛毯 · 主图＋三场景' if blanket else '毛衣 · 正面＋背面＋衣架＋穿搭＋平铺' if sweater else
                        '法兰绒披肩毯 · 主图＋三场景' if ident == DEFAULT_PRESET else '感恩节火鸡 · 本次样例测试'),
-                category='毛衣' if sweater else '毛毯', step_count=len(steps), steps=steps)
+                category='门廊鹅蝴蝶结裙装' if bow_dress else '门廊鹅毛衣' if porch_goose else
+                         '毛衣' if sweater else '毛毯',
+                step_count=len(steps), steps=steps)
 
 
 def delay_seconds(value):
@@ -93,7 +118,10 @@ def settings(data):
 
 
 def catalog(data):
-    return {'presets': [preset(DEFAULT_PRESET), preset(BLANKET_PRESET), preset(TEST_PRESET), preset(SWEATER_PRESET)], 'settings': settings(data)}
+    return {'presets': [preset(DEFAULT_PRESET), preset(BLANKET_PRESET), preset(TEST_PRESET),
+                        preset(SWEATER_PRESET), preset(PORCH_GOOSE_BOW_DRESS_PRESET),
+                        preset(PORCH_GOOSE_PRESET)],
+            'settings': settings(data)}
 
 
 def normalized_prompts(value, selected):
