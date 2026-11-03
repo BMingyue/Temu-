@@ -2,6 +2,12 @@
 
 Git 用来保存工作台和店小秘的源码版本。GitHub 是可选的远程备份位置。同事使用安装版时，不需要学习 Git。
 
+## 多人及 GPT 协作
+
+工作台的共同规则见根目录 [COLLABORATION.md](COLLABORATION.md)，Codex 的自动读取入口为 [AGENTS.md](AGENTS.md)。多人维护在各自独立开发副本和功能分支中提交、推送，再通过 PR 交叉审计并合入 main；下文中文管理器只操作当前分支，不能创建分支、提 PR 或代替独立审批。
+
+规则文件指导正在执行任务的 GPT。持续后台审计、GitHub 分支保护与自动合并必须另行连接和启用，未启用时不能声称已经无人值守。源码任务的自动提交授权不代替真实业务或生产发布授权。
+
 ## 同事安装和更新
 
 仓库地址为 https://github.com/BMingyue/Temu- 。首次获取源码可使用 `git clone https://github.com/BMingyue/Temu-.git`；已有源码目录可在没有本地修改时 `git pull --ff-only`。
