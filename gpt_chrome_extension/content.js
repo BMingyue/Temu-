@@ -464,9 +464,52 @@
   const firstReadyAt=same?previous.firstReadyAt:at,positiveCount=same?previous.positiveCount+1:1;
   return {firstReadyAt,positiveCount,fingerprint,ready:positiveCount>=2&&at-firstReadyAt>=2000};
  }
+ function attachmentDiagnostic(){
+  // Local task-failure telemetry only. Never serialize DOM, labels, filenames,
+  // text, classes or URLs; the backend accepts this fixed numeric/boolean schema.
+  const empty=()=>({version:1,state:'missing_composer',scope:'none',composer:{connected:false,visible:false},control:{present:false,connected:false,visible:false,native_disabled:false,inherited_disabled:false,aria_disabled:false,expanded:false,open:false,marked:false},counts:{elements:0,file_inputs:0,disabled_inputs:0,multiple_inputs:0,markers:0,visible_markers:0,images:0,visible_images:0,image_small:0,image_eligible_size:0,image_large:0,image_unloaded:0,images_in_overlay:0,images_in_dialog:0,images_in_history:0,overlays:0,progress:0,remove_buttons:0,file_dialog_buttons:0,cards:0,raw_images:0,raw_markers:0},ancestors:{overlay:false,dialog:false,history:false}}),result=empty();
+  const box=composer();if(!box)return result;
+  result.composer={connected:box.isConnected!==false,visible:Boolean(visible(box))};
+  const scope=attachmentScope();if(!scope){result.state='missing_scope';return result}
+  result.scope=scope===box.closest('form')?'form':scope===box.parentElement?'parent':'wrapper';
+  result.ancestors={overlay:Boolean(scope.closest(COMPOSER_OVERLAY)),dialog:Boolean(scope.closest(DIALOG_SELECTOR)),history:Boolean(scope.closest(USER_SELECTOR+','+ASSISTANT_SELECTOR))};
+  if(result.ancestors.dialog||result.ancestors.history){result.state='excluded_scope';return result}
+  const elements=scope.querySelectorAll('*');result.counts.elements=Math.min(elements.length,5000);
+  if(elements.length>5000){result.state='truncated';return result}
+  const control=uploadControl();
+  if(control&&scope.contains(control))result.control={present:true,connected:control.isConnected!==false,visible:Boolean(visible(control)),native_disabled:Boolean(control.disabled),inherited_disabled:Boolean(control.matches(':disabled')),aria_disabled:String(control.getAttribute('aria-disabled')||'').trim().toLowerCase()==='true',expanded:control.getAttribute('aria-expanded')==='true',open:control.getAttribute('data-state')==='open',marked:Boolean(control.matches(ADD_CONTEXT))};
+  const marked=[],images=[];
+  for(const node of elements){
+   const shown=Boolean(visible(node)),overlay=Boolean(node.closest(COMPOSER_OVERLAY)),dialog=Boolean(node.closest(DIALOG_SELECTOR)),history=Boolean(node.closest(USER_SELECTOR+','+ASSISTANT_SELECTOR)),local=shown&&!overlay&&!dialog&&!history;
+   if(node.matches('input[type="file"]')){result.counts.file_inputs++;if(uploadActionDisabled(node))result.counts.disabled_inputs++;if(node.multiple)result.counts.multiple_inputs++}
+   if(node.matches(ATTACHMENT_SELECTOR)){result.counts.markers++;if(shown)result.counts.visible_markers++;if(shown&&!overlay)result.counts.raw_markers++;if(local)marked.push(node)}
+   if(node.matches(COMPOSER_OVERLAY))result.counts.overlays++;
+   if(local&&node.matches('[role="progressbar"],[data-testid*="uploading"],[aria-busy="true"]'))result.counts.progress++;
+   if(node.matches('button,[role="button"]')){
+    if(shown&&node.matches('[aria-label^="移除"],[aria-label^="删除"],[aria-label^="remove" i],[aria-label^="delete" i],[title^="移除"],[title^="删除"],[title^="remove" i],[title^="delete" i]'))result.counts.remove_buttons++;
+    if(shown&&node.matches('[aria-haspopup="dialog"]'))result.counts.file_dialog_buttons++;
+   }
+   if(!node.matches('img'))continue;
+   result.counts.images++;if(overlay)result.counts.images_in_overlay++;if(dialog)result.counts.images_in_dialog++;if(history)result.counts.images_in_history++;
+   if(node.complete===false||node.naturalWidth===0)result.counts.image_unloaded++;
+   if(!shown)continue;
+   result.counts.visible_images++;const rect=node.getBoundingClientRect();
+   if(rect.width<32||rect.height<32)result.counts.image_small++;
+   else if(rect.width>220||rect.height>220)result.counts.image_large++;
+   else{result.counts.image_eligible_size++;if(!overlay)result.counts.raw_images++;if(local)images.push(node)}
+  }
+  const leaves=marked.filter(node=>!marked.some(child=>child!==node&&node.contains(child)));
+  // Structural candidate count, not evidence of file identity or readiness.
+  result.counts.cards=leaves.length+images.filter(image=>!marked.some(node=>node.contains(image))).length;
+  result.state='captured';
+  return JSON.stringify(result).length<=3072?result:{...empty(),state:'truncated'};
+ }
  function attachmentFailure(task,message){
   const error=Error(message);
-  if(workflowTask(task)&&task.step_phase==='ready')error.code='workflow_attachment_not_ready';
+  if(workflowTask(task)&&task.step_phase==='ready'){
+   error.code='workflow_attachment_not_ready';
+   try{error.attachmentDiagnostic=attachmentDiagnostic()}catch{/* Diagnostics must never replace the original failure or prevent isolation. */}
+  }
   return error;
  }
  async function attach(task){
@@ -1159,7 +1202,7 @@
    if(workflowTask(task)){
     const message=String(error?.message||error);
     const current=activeWorkflowTask?.job_id===task.job_id?activeWorkflowTask:task;
-    const parked=await workflowPost(current,'workflow_needs_review',{message,code:error?.code||''}).catch(()=>null);
+    const parked=await workflowPost(current,'workflow_needs_review',{message,code:error?.code||'',...(error?.attachmentDiagnostic?{attachment_diagnostic:error.attachmentDiagnostic}:{})}).catch(()=>null);
     await post('/heartbeat',{version:VERSION,page:location.href,status:'任务已跳过',message}).catch(()=>{});
     if(parked?.task_isolated)await releaseIsolatedWorkflow(current);
     else if(/已暂停|失去.*权限|属于另一浏览器|所有权|已失败/.test(message))await releaseIsolatedWorkflow(current);
@@ -1177,7 +1220,7 @@
    }else await post('/heartbeat',{version:VERSION,page:location.href,status:'需要处理',message}).catch(()=>{});
    }finally{activeSession='';busy=false;activeWorkflowTask=null}
  }
-  if(typeof module!=='undefined'&&module.exports){module.exports={imageQuotaText,workflowQuotaFailure,retryableWorkflowFailureText,workflowRetryFailure,uploadControl,selectFiles,responseWaitDecision,uploadName,referenceItems,attachmentItems,nameVisible,attachmentEvidence,attachmentState,attachmentStability,composerAttachmentSnapshot,waitAttachments,attach,canRetryPresend,inTaskChat,stableChatUrl,downloadableImageUrl,bestImageUrl,bestImageSource,isGeneratedImage,generatedCandidate,passivePage,responseDiagnostic,explicitGenerationFailure,workflowTask,workflowUserTurn,workflowAssistantTurn,downloadTask,executeWorkflow,generatedSet,composer,composerText,loginPromptVisible,run,setWorkflowContext:task=>{activeWorkflowTask=task}};return}
+  if(typeof module!=='undefined'&&module.exports){module.exports={imageQuotaText,workflowQuotaFailure,retryableWorkflowFailureText,workflowRetryFailure,uploadControl,selectFiles,responseWaitDecision,uploadName,referenceItems,attachmentItems,nameVisible,attachmentEvidence,attachmentState,attachmentStability,attachmentDiagnostic,attachmentFailure,composerAttachmentSnapshot,waitAttachments,attach,canRetryPresend,inTaskChat,stableChatUrl,downloadableImageUrl,bestImageUrl,bestImageSource,isGeneratedImage,generatedCandidate,passivePage,responseDiagnostic,explicitGenerationFailure,workflowTask,workflowUserTurn,workflowAssistantTurn,downloadTask,executeWorkflow,generatedSet,composer,composerText,loginPromptVisible,run,setWorkflowContext:task=>{activeWorkflowTask=task}};return}
   setInterval(()=>{if(busy)post('/heartbeat',{version:VERSION,session:activeSession,page:location.href,status:'执行中',message:'正在处理当前套图，其他任务排队'}).catch(()=>{})},5000);
  setInterval(run,3000);run();
 })();

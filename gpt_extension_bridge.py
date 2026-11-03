@@ -6,14 +6,14 @@ from datetime import datetime,timezone
 
 LOCK=threading.RLock()
 STATE={'last_seen':None,'page':'','status':'未连接','message':'请安装并启用浏览器生图助手'}
-EXTENSION_VERSION='0.4.13'
+EXTENSION_VERSION='0.4.14'
 # 0.3.40 tightens generated-image detection and sends richer no-image
 # diagnostics.  Older builds must not claim newly prepared tasks because they
 # can count an assistant attachment card as a generated result.
-COMPATIBLE_EXTENSION_VERSIONS=('0.3.40','0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13')
-WORKFLOW_EXTENSION_VERSIONS=('0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13')
-UNATTENDED_EXTENSION_VERSIONS=('0.4.6','0.4.7','0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13')
-SOURCE_EDIT_EXTENSION_VERSIONS=('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13')
+COMPATIBLE_EXTENSION_VERSIONS=('0.3.40','0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13','0.4.14')
+WORKFLOW_EXTENSION_VERSIONS=('0.4.0','0.4.1','0.4.2','0.4.3','0.4.4','0.4.5','0.4.6','0.4.7','0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13','0.4.14')
+UNATTENDED_EXTENSION_VERSIONS=('0.4.6','0.4.7','0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13','0.4.14')
+SOURCE_EDIT_EXTENSION_VERSIONS=('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13','0.4.14')
 WORKERS={}
 BROWSERS=('chrome','edge','firefox')
 PREFERENCE_ORDER=('edge','chrome','firefox')
