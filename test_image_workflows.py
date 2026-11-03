@@ -58,6 +58,81 @@ class WorkflowTests(unittest.TestCase):
         job['next_step_at'] = time.time() - 1
         bridge._write(self.data, job)
 
+    def attachment_diagnostic(self):
+        return dict(version=1, state='captured', scope='form',
+            composer=dict(connected=True, visible=True),
+            control=dict.fromkeys(('present', 'connected', 'visible', 'native_disabled',
+                'inherited_disabled', 'aria_disabled', 'expanded', 'open', 'marked'), False),
+            ancestors=dict(overlay=False, dialog=False, history=False),
+            counts=dict.fromkeys(('elements', 'file_inputs', 'disabled_inputs', 'multiple_inputs',
+                'markers', 'visible_markers', 'images', 'visible_images', 'image_small',
+                'image_eligible_size', 'image_large', 'image_unloaded', 'images_in_overlay',
+                'images_in_dialog', 'images_in_history', 'overlays', 'progress',
+                'remove_buttons', 'file_dialog_buttons', 'cards', 'raw_images', 'raw_markers'), 0))
+
+    def test_attachment_report_is_bound_to_unsent_step_and_strips_page_data(self):
+        task = self.claim()
+        diagnostic = self.attachment_diagnostic()
+        diagnostic['html'] = '<private>'
+        diagnostic['counts']['src'] = 'https://example.invalid/private?token=secret'
+        diagnostic['control']['label'] = 'private filename.png'
+        result = self.event(task, 'workflow_needs_review', code='workflow_attachment_not_ready',
+                            message='upload failed', attachment_diagnostic=diagnostic)
+        self.assertTrue(result['task_isolated'])
+        saved = bridge._read(self.data, self.job['id'])
+        step = flow.current(saved)
+        self.assertEqual(step['last_attachment_diagnostic'], self.attachment_diagnostic())
+        self.assertEqual(step['step_token'], task['step_token'])
+        self.assertEqual(step['attachment_diagnostic_step_token'], task['step_token'])
+        self.assertEqual(step['phase'], 'ready')
+        self.assertFalse(any(step.get(key) for key in ('send_started_at', 'sent_at', 'user_message_id')))
+        trace = next(row for row in saved['logs'] if row['event'] == 'attachment_diagnostic')
+        self.assertEqual(trace['details']['step'], task['step_number'])
+        self.assertEqual(trace['details']['step_token'], task['step_token'])
+        self.assertEqual(trace['details']['worker_id'], self.owner['worker_id'])
+        self.assertNotIn('private', json.dumps(step['last_attachment_diagnostic']))
+
+    def test_invalid_attachment_reports_still_isolate_without_persisting(self):
+        good = self.attachment_diagnostic()
+        bad = [None, {}, dict(good, version=True), dict(good, state='raw-html'),
+               dict(good, html='x' * 3073), dict(good, counts=dict(good['counts'], cards=True)),
+               dict(good, counts=dict(good['counts'], cards=5001)),
+               dict(good, control=dict(good['control'], expanded='true'))]
+        for diagnostic in bad:
+            with self.subTest(diagnostic=type(diagnostic).__name__):
+                self.assertIsNone(flow._attachment_diagnostic(diagnostic))
+        task = self.claim()
+        self.event(task, 'workflow_needs_review', code='workflow_attachment_not_ready',
+                   message='original failure', attachment_diagnostic=bad[-1])
+        saved = bridge._read(self.data, self.job['id'])
+        self.assertEqual(saved['batch_phase'], 'needs_review')
+        self.assertNotIn('last_attachment_diagnostic', flow.current(saved))
+        self.assertIn('original failure', saved['error'])
+
+    def test_attachment_report_cannot_update_other_worker_or_step(self):
+        task = self.claim()
+        path = self.data / 'image-jobs' / self.job['id'] / 'job.json'
+        before = path.read_bytes()
+        common = dict(self.owner, job_id=self.job['id'], event='workflow_needs_review',
+                      step=task['step_number'], step_token=task['step_token'],
+                      code='workflow_attachment_not_ready', attachment_diagnostic=self.attachment_diagnostic())
+        for changed in (dict(worker_id='other'), dict(session='old-tab'), dict(step_token='old-step')):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                bridge.update(self.data, {**common, **changed})
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_attachment_report_does_not_change_unknown_send_protection(self):
+        task = self.claim()
+        self.event(task, 'workflow_sending', chat_url='https://chatgpt.com/')
+        before = bridge._read(self.data, self.job['id'])
+        self.event(task, 'workflow_needs_review', code='workflow_attachment_not_ready',
+                   message='send not confirmed', attachment_diagnostic=self.attachment_diagnostic())
+        saved = bridge._read(self.data, self.job['id'])
+        self.assertEqual(saved['batch_phase'], 'needs_review')
+        self.assertEqual(flow.current(saved)['phase'], 'sending')
+        self.assertEqual(flow.current(saved)['send_started_at'], flow.current(before)['send_started_at'])
+        self.assertNotIn('last_attachment_diagnostic', flow.current(saved))
+
     def test_four_steps_two_images_same_chat_master_reference(self):
         self.assert_step_workflow()
 
