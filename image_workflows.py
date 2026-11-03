@@ -525,6 +525,46 @@ def payload(job):
                          response_refresh_count=job.get('response_refresh_count', 0))}
 
 
+def _attachment_diagnostic(value):
+    """Keep bounded structural counters, never page text, attributes or URLs."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        if len(json.dumps(value, ensure_ascii=False).encode('utf-8')) > 3072:
+            return None
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if type(value.get('version')) is not int or value['version'] != 1:
+        return None
+    states = ('missing_composer', 'missing_scope', 'excluded_scope', 'captured', 'truncated')
+    scopes = ('none', 'form', 'parent', 'wrapper')
+    if value.get('state') not in states or value.get('scope') not in scopes:
+        return None
+    result = dict(version=1, state=value['state'], scope=value['scope'])
+    booleans = {
+        'composer': ('connected', 'visible'),
+        'control': ('present', 'connected', 'visible', 'native_disabled',
+                    'inherited_disabled', 'aria_disabled', 'expanded', 'open', 'marked'),
+        'ancestors': ('overlay', 'dialog', 'history'),
+    }
+    for group, keys in booleans.items():
+        fields = value.get(group)
+        if not isinstance(fields, dict) or any(type(fields.get(key)) is not bool for key in keys):
+            return None
+        result[group] = {key: fields[key] for key in keys}
+    keys = ('elements', 'file_inputs', 'disabled_inputs', 'multiple_inputs',
+            'markers', 'visible_markers', 'images', 'visible_images', 'image_small',
+            'image_eligible_size', 'image_large', 'image_unloaded', 'images_in_overlay',
+            'images_in_dialog', 'images_in_history', 'overlays', 'progress',
+            'remove_buttons', 'file_dialog_buttons', 'cards', 'raw_images', 'raw_markers')
+    counts = value.get('counts')
+    if not isinstance(counts, dict) or any(type(counts.get(key)) is not int or
+                                          not 0 <= counts[key] <= 5000 for key in keys):
+        return None
+    result['counts'] = {key: counts[key] for key in keys}
+    return result
+
+
 def update(job, body, data):
     """Called inside the bridge ownership/session lock. Never infer a send from a URL."""
     import gpt_extension_bridge as bridge
@@ -563,6 +603,19 @@ def update(job, body, data):
         reason = 'workflow_page_not_ready' if body.get('code') == 'workflow_page_not_ready' else 'task_stalled'
         if step['phase'] == 'ready' and body.get('code') == 'workflow_attachment_not_ready':
             reason = 'workflow_attachment_not_ready'
+            # This report describes only this owned, explicitly unsent attempt.
+            # Invalid diagnostics must never prevent the existing isolation path.
+            if (body.get('step') == step['number'] and body.get('step_token') == step['step_token']
+                    and not any(step.get(key) for key in ('send_started_at', 'sent_at', 'user_message_id'))):
+                diagnostic = _attachment_diagnostic(body.get('attachment_diagnostic'))
+                if diagnostic is not None:
+                    step['last_attachment_diagnostic'] = diagnostic
+                    step['attachment_diagnostic_at'] = bridge.now()
+                    step['attachment_diagnostic_step_token'] = step['step_token']
+                    bridge._trace(job, 'attachment_diagnostic', '记录本步骤附件结构计数',
+                                  step=step['number'], step_token=step['step_token'],
+                                  worker_id=job.get('assigned_worker', ''),
+                                  diagnostic=diagnostic)
         gpt_unattended.isolate(data, job, message, reason)
         return {'ok': True, 'job_status': job['status'], 'task_isolated': True}
     number = int(body.get('step', 0))
