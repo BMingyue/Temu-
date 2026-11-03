@@ -349,7 +349,7 @@ class PresendRecoveryTests(unittest.TestCase):
 
     def test_stale_uncertain_sending_phase_is_failed_but_never_requeued(self):
         with TemporaryDirectory() as root:
-            path = self.make_job(root, phase='sending', age=600)
+            path = self.make_job(root, phase='sending', age=bridge.SEND_STALE_SECONDS + 1)
             result = bridge.claim(root, {
                 'browser': 'edge', 'worker_id': 'other-worker',
                 'session': 'other-session', 'version': bridge.EXTENSION_VERSION,

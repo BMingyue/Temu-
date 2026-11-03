@@ -36,20 +36,30 @@
   const related=element=>{
    return declared.length||owned.length?owned.some(parent=>parent.contains(element)):scope?.contains(element)||createdDuringClick?.has(element)&&!beforeVisible.has(element);
   };
-  const candidates=[...document.querySelectorAll('[role="menuitem"],button')].filter(element=>element!==control&&visible(element)&&!element.closest(ATTACHMENT_EXCLUDED)&&/^(?:上传文件|从电脑上传|从计算机上传|选择文件|上传照片和文件|添加照片和文件|upload from computer|upload photos and files|upload files|add photos and files|add files|choose files)(?:\b|\s|$)/i.test(label(element))&&related(element));
+  // Visible block subtitles have a line break in innerText, while textContent
+  // can join the title and subtitle without a separator.
+  const menuLabel=element=>{
+   const text=String(element.getAttribute('aria-label')||element.innerText||element.textContent||'').trim();
+   if(text.startsWith('添加照片和文件')){
+    const compact=text.replace(/\s+/g,'');
+    return compact==='添加照片和文件'?'添加照片和文件':compact==='添加照片和文件从计算机上传'?'添加照片和文件 从计算机上传':'';
+   }
+   return text;
+  };
+  const candidates=[...document.querySelectorAll('[role="menuitem"],button')].filter(element=>element!==control&&visible(element)&&!element.closest(ATTACHMENT_EXCLUDED)&&/^(?:上传文件|从电脑上传|从计算机上传|选择文件|上传照片和文件|添加照片和文件|upload from computer|upload photos and files|upload files|add photos and files|add files|choose files)(?:\b|\s|$)/i.test(menuLabel(element))&&related(element));
   return candidates.length===1?candidates[0]:null;
  }
- async function captureOwnedMenuInput(control,beforeVisible,createdDuringClick,task){
+ async function captureOwnedMenuInput(control,beforeVisible,createdDuringClick,task,triggerPhase='click',verifyContext=null){
   let interrupted=false;
   const events=['pointerdown','pointerup','mousedown','mouseup','touchstart','keydown','keyup','click','input','paste','drop','wheel'];
   const cancel=event=>{if(event.isTrusted)interrupted=true};
-  const verify=()=>{if(interrupted)throw workflowFailure('用户正在操作当前页面，已取消本次附件选择；请确认草稿和菜单后再继续','workflow_upload_interrupted')};
+  const verify=()=>{if(interrupted)throw workflowFailure('用户正在操作当前页面，已取消本次附件选择；请确认草稿和菜单后再继续','workflow_upload_interrupted');if(verifyContext)verifyContext()};
   // The listener that grants file-input authority never crosses an await.
   // During menu rendering we retain only a trusted-user cancellation guard,
   // so a later user-opened project menu cannot inherit the earlier click.
   for(const type of events)document.addEventListener(type,cancel,true);
   try{
-   const menu=await waitFor(()=>{verify();return uploadMenu(control,beforeVisible,createdDuringClick)},10000,'找不到当前上传控件的唯一照片或文件菜单（'+uploadDiagnostic()+'）').catch(error=>{if(error.code)throw error;throw attachmentFailure(task,error.message)});
+   const menu=await waitFor(()=>{verify();return uploadMenu(control,beforeVisible,createdDuringClick)},10000,'找不到当前上传控件的唯一照片或文件菜单').catch(error=>{if(error.code)throw error;throw attachmentFailure(task,error.message+'（触发阶段 '+triggerPhase+'；展开 '+(control.getAttribute('aria-expanded')||'未知')+'；状态 '+(control.getAttribute('data-state')||'未知')+'；'+uploadDiagnostic()+'）')});
    verify();return captureUploadInput(menu,task,{control,beforeVisible,createdDuringClick});
   }finally{for(const type of events)document.removeEventListener(type,cancel,true)}
  }
@@ -72,9 +82,10 @@
   // owned upload click. MIME/multiple ranking does not establish ownership.
   return inputs.length===1?inputs[0]:null;
  }
- function captureUploadInput(control,task,menuContext=null){
+ function uploadActionDisabled(control){return Boolean(control?.disabled||control?.matches?.(':disabled')||String(control?.getAttribute?.('aria-disabled')||'').trim().toLowerCase()==='true')}
+ function captureUploadInput(control,task,menuContext=null,activation=null){
   const box=composer(),scope=attachmentScope(),key=attachmentKey(task);
-  const owned=box&&scope&&visible(control)&&!control.closest(ATTACHMENT_EXCLUDED)&&(menuContext?uploadMenu(menuContext.control,menuContext.beforeVisible,menuContext.createdDuringClick)===control:uploadControl()===control);
+  const owned=box&&scope&&visible(control)&&!uploadActionDisabled(control)&&!control.closest(ATTACHMENT_EXCLUDED)&&(menuContext?uploadMenu(menuContext.control,menuContext.beforeVisible,menuContext.createdDuringClick)===control:uploadControl()===control);
   if(!owned)throw attachmentFailure(task,'无法确认当前上传控件属于本步骤输入框，已停止选择文件');
   if(composerText(box).trim())throw attachmentFailure(task,'当前输入框已有草稿，已停止选择文件');
   if(composerAttachmentSnapshot(scope).cards.length||[...scope.querySelectorAll(ATTACHMENT_SELECTOR)].some(node=>!node.closest(ATTACHMENT_EXCLUDED)))throw attachmentFailure(task,'当前输入框已有附件，已停止重新选择文件');
@@ -88,12 +99,60 @@
    event.preventDefault();observed.push(input);
   };
   document.addEventListener('click',capture,true);
-  try{control.click()}finally{document.removeEventListener('click',capture,true)}
+  try{
+   if(!activation||activation.type==='click')control.click();
+   else{
+    const rect=control.getBoundingClientRect(),down=activation.type.endsWith('down');
+    const options={bubbles:true,cancelable:true,composed:true,button:0,buttons:down?1:0,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2,ctrlKey:false,altKey:false,shiftKey:false,metaKey:false};
+    const event=activation.type.startsWith('pointer')?new PointerEvent(activation.type,{...options,pointerId:1,pointerType:'mouse',isPrimary:true}):new MouseEvent(activation.type,options);
+    control.dispatchEvent(event);activation.defaultPrevented=event.defaultPrevented;
+   }
+  }finally{document.removeEventListener('click',capture,true)}
   if(composer()!==box||box.isConnected===false||attachmentKey(task)!==key)throw attachmentFailure(task,'选择文件期间输入框或本步骤身份已变化');
   if(composerText(box).trim())throw attachmentFailure(task,'选择文件期间出现了其他草稿，已停止选择文件');
+  if(uploadActionDisabled(control))throw attachmentFailure(task,'上传控件在选择文件期间已禁用，已停止上传');
   if(!observed.length)return null;
   if(observed.length!==1||!uploadInputEligible(observed[0],task))throw attachmentFailure(task,'上传控件触发了多个或不适用的文件输入框，已停止选择文件');
   return observed[0];
+ }
+ async function activateUploadControl(control,task){
+  const box=composer(),key=attachmentKey(task);
+  const beforeVisible=new Set([...document.querySelectorAll('[role="menuitem"],button')].filter(visible)),createdDuringClick=new Set();
+  let interrupted=false,pointerDefaultPrevented=false,lastPhase='existing-menu';
+  const events=['pointerdown','pointerup','mousedown','mouseup','touchstart','keydown','keyup','click','input','paste','drop','wheel'];
+  const cancel=event=>{if(event.isTrusted)interrupted=true};
+  const verify=()=>{
+   if(interrupted)throw workflowFailure('用户正在操作当前页面，已取消本次附件选择；请确认草稿和菜单后再继续','workflow_upload_interrupted');
+   if(!box||composer()!==box||box.isConnected===false||control.isConnected===false||uploadActionDisabled(control)||uploadControl()!==control||attachmentKey(task)!==key||composerText(box).trim())throw attachmentFailure(task,'打开附件菜单期间输入框、本步骤、上传控件或草稿已变化或控件已禁用，已停止上传');
+  };
+  const opened=()=>Boolean(uploadMenu(control,beforeVisible,createdDuringClick))||control.getAttribute('aria-expanded')==='true'||control.getAttribute('data-state')==='open';
+  for(const type of events)document.addEventListener(type,cancel,true);
+  try{
+   verify();
+   // Reuse an already open, owned menu. Opening its trigger again can close
+   // it. Menu options retain their existing single click-only activation.
+   if(uploadMenu(control,beforeVisible,createdDuringClick))return await captureOwnedMenuInput(control,beforeVisible,createdDuringClick,task,lastPhase,verify);
+   if(!opened())for(const type of ['pointerdown','mousedown','pointerup','mouseup','click']){
+    if(pointerDefaultPrevented&&(type==='mousedown'||type==='mouseup'))continue;
+    verify();lastPhase=type;
+    const phaseBeforeVisible=new Set([...document.querySelectorAll('[role="menuitem"],button')].filter(visible));
+    const activation={type,defaultPrevented:false},input=captureUploadInput(control,task,null,activation);
+    // Only menus made visible in this exact synchronous owned event may
+    // enter the no-ARIA portal whitelist. Later renders still need ARIA.
+    for(const element of document.querySelectorAll('[role="menuitem"],button'))if(visible(element)&&!phaseBeforeVisible.has(element))createdDuringClick.add(element);
+    verify();
+    if(input)return input;
+    if(type==='pointerdown')pointerDefaultPrevented=activation.defaultPrevented;
+    if(opened())break;
+    // Discrete React handlers may commit after dispatchEvent returns. Let
+    // that render finish before trying another phase, to avoid toggling an
+    // opened menu closed. No file-input authority survives this await.
+    const until=Date.now()+250;
+    do{await sleep(25);verify();if(opened())break}while(Date.now()<until);
+    if(opened())break;
+   }
+   verify();return await captureOwnedMenuInput(control,beforeVisible,createdDuringClick,task,lastPhase,verify);
+  }finally{for(const type of events)document.removeEventListener(type,cancel,true)}
  }
  function uploadDiagnostic(){
   const scope=attachmentScope();if(!scope)return '未识别 GPT 输入框；关联文件输入框：无';
@@ -389,15 +448,9 @@
   let input=uploadInput(true,task),captured=false;
   if(!input){
    const control=await waitFor(uploadControl,20000,'找不到添加文件按钮').catch(()=>{throw attachmentFailure(task,'找不到添加文件按钮（'+uploadDiagnostic()+'）')});
-   const beforeVisible=new Set([...document.querySelectorAll('[role="menuitem"],button')].filter(visible));
-   input=captureUploadInput(control,task);
-   const createdDuringClick=new Set([...document.querySelectorAll('[role="menuitem"],button')].filter(element=>visible(element)&&!beforeVisible.has(element)));
-   captured=Boolean(input);
-   if(!input){
-    input=await captureOwnedMenuInput(control,beforeVisible,createdDuringClick,task);
-    if(!input)throw attachmentFailure(task,'当前上传控件未同步触发可确认的文件输入框，已停止选择文件（'+uploadDiagnostic()+'）');
-    captured=true;
-   }
+   input=await activateUploadControl(control,task);
+   if(!input)throw attachmentFailure(task,'当前上传控件未同步触发可确认的文件输入框，已停止选择文件（'+uploadDiagnostic()+'）');
+   captured=true;
   }
   const items=attachmentItems(task),files=items.map(item=>file(item,uploadName(task,item)));
   if(composer()!==originalBox||originalBox.isConnected===false||attachmentKey(task)!==originalKey||composerText(originalBox).trim())throw attachmentFailure(task,'选择文件前输入框、本步骤或草稿已变化，已停止上传');

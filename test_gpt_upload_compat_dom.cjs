@@ -2,6 +2,8 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),cp=require('node:child_process');
 const {chromium}=require('./local_tools/dxm-uploader/_internal/playwright/driver/package');
 const source=fs.readFileSync(path.join(__dirname,'gpt_chrome_extension/content.js'),'utf8');
+const gestureBaselineRevision='448678544c7067a1ba425d808c3fc9a25ca39d80';
+const gestureBaseline=cp.execFileSync('git',['show',gestureBaselineRevision+':gpt_chrome_extension/content.js'],{cwd:__dirname,encoding:'utf8',stdio:['ignore','pipe','pipe']});
 const baselineRevision='9e0cda35fe3fe8b7c8a4036908d47ad86aeb7424';
 let baseline=null;
 try{baseline=cp.execFileSync('git',['show',baselineRevision+':gpt_chrome_extension/content.js'],{cwd:__dirname,encoding:'utf8',stdio:['ignore','pipe','pipe']})}catch{}
@@ -13,8 +15,31 @@ const picture=color=>'data:image/svg+xml;base64,'+Buffer.from(`<svg xmlns="http:
 const img=(color,alt='')=>`<img width="64" height="64" src="${picture(color)}" alt="${alt}">`;
 const card=(name,color='red')=>`<div data-testid="composer-attachment" title="${name}">${img(color,name)}</div>`;
 const form=(extra='')=>`<form id="composer-form">${extra}<textarea id="prompt-textarea"></textarea><button data-testid="send-button" onclick="window.__sends++">Send</button></form>`;
-const result={mode:'isolated headless DOM fixtures; no live GPT or backend; fixed 0.4.9 baseline',checks:[],baseline:{revision:baselineRevision,available:Boolean(baseline)},baselineReproductions:[],pageErrors:[],sendClicks:0};
+const result={mode:'isolated headless DOM fixtures; no live GPT or backend; fixed 0.4.9 and 0.4.11 baselines; real React MAIN to isolated-world fixture',content_sha256:require('node:crypto').createHash('sha256').update(source).digest('hex'),checks:[],baseline:{revision:baselineRevision,available:Boolean(baseline),gestureRevision:gestureBaselineRevision},baselineReproductions:[],pageErrors:[],sendClicks:0};
 const fourInputs='<input id="single-image" type="file" accept="image/*"><input id="image-video" type="file" multiple accept="image/*,video/*"><input id="multi-image" type="file" multiple accept="image/*"><input id="any-file" type="file" multiple>';
+const store=path.join(__dirname,'node_modules/.pnpm');
+const esbuild=require(path.join(store,fs.readdirSync(store).find(name=>name.startsWith('esbuild@')),'node_modules/esbuild'));
+const reactGestureBundle=esbuild.buildSync({stdin:{contents:`
+ import React,{useState,useRef} from 'react';
+ import {createRoot} from 'react-dom/client';
+ import {createPortal} from 'react-dom';
+ const h=React.createElement;
+ function App(){
+  const [open,setOpen]=useState(false),[files,setFiles]=useState([]),input=useRef(null);
+  const onPointerDown=event=>{window.__reactEvents.push('pointerdown');if(event.button===0&&!event.ctrlKey)setTimeout(()=>setOpen(true),80)};
+  const onClick=()=>{window.__reactEvents.push('click');setOpen(previous=>!previous)};
+  return h(React.Fragment,null,h('div',{id:'composer-wrapper'},h('form',{id:'composer-form'},
+   h('textarea',{id:'prompt-textarea'}),
+   h('input',{id:'single-image',type:'file',accept:'image/*'}),h('input',{id:'image-video',type:'file',accept:'image/*,video/*',multiple:true}),
+   h('input',{id:'multi-image',type:'file',accept:'image/*',multiple:true,ref:input,onClick:event=>window.__reactInputDefault.push(event.defaultPrevented),onChange:event=>setFiles([...event.target.files].map(file=>file.name))}),
+   h('input',{id:'any-file',type:'file',multiple:true}),
+   h('button',{id:'add',type:'button','aria-label':'添加文件等内容','aria-haspopup':'menu','aria-expanded':open,'aria-controls':open?'react-menu':undefined,'data-state':open?'open':'closed',onPointerDown,onClick},'+'),
+   h('button',{type:'button','data-testid':'send-button',onClick:()=>window.__sends++},'Send'),
+   ...files.map((name,index)=>h('div',{'data-testid':'composer-attachment',title:name,key:name},h('img',{width:64,height:64,src:window.__fixturePictures[index],alt:name}))))),
+   open?createPortal(h('div',{id:'react-menu',role:'menu','aria-labelledby':'add'},h('button',{id:'react-option',type:'button',role:'menuitem',onClick:()=>{window.__reactEvents.push('menu-click');input.current.click()}},'添加照片和文件 从计算机上传')),document.body):null);
+ }
+ window.__reactEvents=[];window.__reactInputDefault=[];createRoot(document.getElementById('react-root')).render(h(App));
+ `,resolveDir:__dirname,sourcefile:'isolated-react-upload-fixture.js'},bundle:true,write:false,platform:'browser',format:'iife',define:{'process.env.NODE_ENV':'"production"'}}).outputFiles[0].text;
 
 (async()=>{
  const browser=await chromium.launch({executablePath:process.env.WORKBENCH_TEST_CHROME||path.join(__dirname,'runtime/gpt-chrome/chrome-win64/chrome.exe'),headless:true});
@@ -119,6 +144,87 @@ const fourInputs='<input id="single-image" type="file" accept="image/*"><input i
     assert.equal(files.find(input=>input.id===target).count,2);assert(files.filter(input=>input.id!==target).every(input=>input.count===0));assert.deepEqual(await page.evaluate(()=>window.__inputDefaultPrevented),[true]);
    }
   });
+  await check('0.4.11 click-only cannot open a pointerdown-only menu; the compatible entry stops at the first owned open menu',async()=>{
+   const html='<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="添加文件等内容">+</button></div>';
+   async function setup(){await page.evaluate(pictures=>{
+    window.__triggerEvents=[];const add=document.querySelector('#add'),input=document.querySelector('#multi-image');
+    input.addEventListener('change',()=>{document.querySelector('form').insertAdjacentHTML('beforeend',pictures.map(src=>`<div data-testid="composer-attachment"><img width="64" height="64" src="${src}" alt="Image"></div>`).join(''))});
+    for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])add.addEventListener(type,()=>window.__triggerEvents.push(type));
+    add.addEventListener('pointerdown',event=>{if(event.button!==0||event.ctrlKey)return;const menu=document.createElement('button');menu.id='pointer-menu';menu.setAttribute('role','menuitem');menu.innerHTML='<span>添加照片和文件</span><span>从计算机上传</span>';menu.addEventListener('click',()=>input.click());document.body.append(menu)});
+   },[picture('red'),picture('blue')]);}
+   await load(html,gestureBaseline);await setup();assert.equal(await page.evaluate(value=>module.exports.captureUploadInput(document.querySelector('#add'),value),task),null);assert.deepEqual(await page.evaluate(()=>window.__triggerEvents),['click']);assert.equal(await page.locator('#pointer-menu').count(),0);result.baselineReproductions.push('0.4.11 only dispatches click and leaves a pointerdown-only composer menu closed');
+   await load(html);await setup();await page.evaluate(value=>module.exports.attach(value),task);assert.equal((await state()).ready,true);assert.deepEqual(await page.evaluate(()=>window.__triggerEvents),['pointerdown']);assert.equal(await page.locator('#multi-image').evaluate(input=>input.files.length),2);
+  });
+  await check('mousedown, mouseup and click-only entry handlers remain compatible without activating a menu item twice',async()=>{
+   for(const trigger of ['mousedown','mouseup','click']){
+    await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div>');
+    await page.evaluate(({trigger,pictures})=>{window.__entryEvents=[];window.__menuClicks=0;const add=document.querySelector('#add'),input=document.querySelector('#multi-image');input.addEventListener('change',()=>document.querySelector('form').insertAdjacentHTML('beforeend',pictures.map(src=>`<div data-testid="composer-attachment"><img width="64" height="64" src="${src}" alt="Image"></div>`).join('')));for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])add.addEventListener(type,()=>window.__entryEvents.push(type));add.addEventListener(trigger,()=>{add.setAttribute('aria-controls','owned-menu');add.setAttribute('aria-expanded','true');const menu=document.createElement('div');menu.id='owned-menu';menu.setAttribute('role','menu');menu.innerHTML='<button id="upload-option" type="button" role="menuitem">Upload photos and files</button>';menu.querySelector('button').addEventListener('click',()=>{window.__menuClicks++;input.click()});document.body.append(menu)})},{trigger,pictures:[picture('red'),picture('blue')]});
+    await page.evaluate(value=>module.exports.attach(value),task);assert.equal((await state()).ready,true);const events=await page.evaluate(()=>window.__entryEvents);assert.equal(events.at(-1),trigger);assert.equal(await page.evaluate(()=>window.__menuClicks),1);
+   }
+  });
+  await check('preventDefault used only to retain composer focus does not suppress a click-only menu fallback',async()=>{
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div>');
+   await page.evaluate(pictures=>{window.__entryEvents=[];const add=document.querySelector('#add'),input=document.querySelector('#multi-image');input.addEventListener('change',()=>document.querySelector('form').insertAdjacentHTML('beforeend',pictures.map(src=>`<div data-testid="composer-attachment"><img width="64" height="64" src="${src}" alt="Image"></div>`).join('')));for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])add.addEventListener(type,event=>{window.__entryEvents.push(type);if(type==='pointerdown')event.preventDefault()});add.addEventListener('click',()=>{const option=document.createElement('button');option.setAttribute('role','menuitem');option.textContent='Add photos and files';option.addEventListener('click',()=>input.click());document.body.append(option)})},[picture('red'),picture('blue')]);
+   await page.evaluate(value=>module.exports.attach(value),task);assert.equal((await state()).ready,true);assert.deepEqual(await page.evaluate(()=>window.__entryEvents),['pointerdown','pointerup','click']);
+  });
+  await check('an already open explicitly owned menu is reused without toggling its composer entry closed',async()=>{
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files" aria-expanded="true" aria-controls="owned-menu">+</button></div><div id="owned-menu" role="menu"><button id="owned-option" type="button" role="menuitem">添加照片和文件 从计算机上传</button></div>');
+   await page.evaluate(pictures=>{window.__entryEvents=[];const input=document.querySelector('#multi-image');input.addEventListener('change',()=>document.querySelector('form').insertAdjacentHTML('beforeend',pictures.map(src=>`<div data-testid="composer-attachment"><img width="64" height="64" src="${src}" alt="Image"></div>`).join('')));for(const type of ['pointerdown','mousedown','click'])document.querySelector('#add').addEventListener(type,()=>{window.__entryEvents.push(type);document.querySelector('#owned-menu')?.remove()});document.querySelector('#owned-option').addEventListener('click',()=>input.click())},[picture('red'),picture('blue')]);
+   await page.evaluate(value=>module.exports.attach(value),task);assert.equal((await state()).ready,true);assert.deepEqual(await page.evaluate(()=>window.__entryEvents),[]);
+  });
+  await check('the observed Chinese title and block subtitle remain identifiable without textContent whitespace',async()=>{
+   for(const aria of ['', 'aria-label="添加照片和文件"'])for(const style of ['', 'style="display:block"']){
+    const html='<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="添加文件等内容" aria-expanded="true" aria-controls="owned-menu">+</button></div><div id="owned-menu" role="menu"><button id="owned-option" type="button" role="menuitem" '+aria+'><span>添加照片和文件</span><span '+style+'>从计算机上传</span></button><button type="button" role="menuitem">从资料库添加</button></div>';
+    await load(html,gestureBaseline);assert.equal(await page.locator('#owned-option').textContent(),'添加照片和文件从计算机上传');assert.equal(await page.evaluate(()=>module.exports.uploadMenu(document.querySelector('#add'),new Set())?.id||null),aria?'owned-option':null);if(!aria)result.baselineReproductions.push('0.4.11 textContent joins the observed Chinese upload title and '+(style?'block':'inline')+' subtitle and misses its menu option');
+    await load(html);await page.evaluate(pictures=>{const input=document.querySelector('#multi-image');input.addEventListener('change',()=>document.querySelector('form').insertAdjacentHTML('beforeend',pictures.map(src=>`<div data-testid="composer-attachment"><img width="64" height="64" src="${src}" alt="Image"></div>`).join('')));document.querySelector('#owned-option').addEventListener('click',()=>input.click())},[picture('red'),picture('blue')]);assert.equal(await page.evaluate(()=>module.exports.uploadMenu(document.querySelector('#add'),new Set())?.id),'owned-option');await page.evaluate(value=>module.exports.attach(value),task);assert.equal((await state()).ready,true);
+   }
+   for(const style of ['', 'style="display:block"']){await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="添加文件等内容" aria-controls="owned-menu">+</button></div><div id="owned-menu" role="menu"><button role="menuitem"><span>添加照片和文件</span><span '+style+'>从资料库上传</span></button></div>');assert.equal(await page.evaluate(()=>module.exports.uploadMenu(document.querySelector('#add'),new Set())),null);}
+  });
+  await check('disabled or aria-disabled upload entries and menu options never receive synthesized activation',async()=>{
+   for(const disabled of ['disabled','aria-disabled="true"'])for(const target of ['entry','menu']){
+    await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files" '+(target==='entry'?disabled:'aria-expanded="true" aria-controls="owned-menu"')+'>+</button></div>'+(target==='menu'?'<div id="owned-menu" role="menu"><button id="owned-option" type="button" role="menuitem" '+disabled+'>Upload files</button></div>':''));
+    await page.evaluate(target=>{window.__disabledActivations=0;const control=document.querySelector(target==='entry'?'#add':'#owned-option');for(const type of ['pointerdown','mousedown','click'])control.addEventListener(type,()=>{window.__disabledActivations++;document.querySelector('#multi-image').click()})},target);
+    const failure=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.equal(failure.code,'workflow_attachment_not_ready');assert.equal(await page.evaluate(()=>window.__disabledActivations),0);assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+   }
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div>');await page.evaluate(()=>{window.__entryClicks=0;document.querySelector('#add').addEventListener('pointerdown',()=>setTimeout(()=>document.querySelector('#add').disabled=true,10));document.querySelector('#add').addEventListener('click',()=>window.__entryClicks++)});
+   const failure=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.equal(failure.code,'workflow_attachment_not_ready');assert.match(failure.message,/控件已禁用/);assert.equal(await page.evaluate(()=>window.__entryClicks),0);assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div>');await page.evaluate(()=>{window.__lateMenuClicks=0;const control=document.querySelector('#add');control.addEventListener('pointerdown',()=>{control.setAttribute('aria-expanded','true');control.setAttribute('aria-controls','owned-menu');setTimeout(()=>control.setAttribute('aria-disabled','true'),10);setTimeout(()=>{const menu=document.createElement('div');menu.id='owned-menu';menu.setAttribute('role','menu');menu.innerHTML='<button id="late-option" type="button" role="menuitem">Upload files</button>';menu.querySelector('button').addEventListener('click',()=>{window.__lateMenuClicks++;document.querySelector('#multi-image').click()});document.body.append(menu)},60)})});const waiting=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.match(waiting.message,/控件已禁用/);assert.equal(waiting.code,'workflow_attachment_not_ready');assert.equal(await page.evaluate(()=>window.__lateMenuClicks),0);assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files" aria-expanded="true" aria-controls="owned-menu">+</button></div><div id="owned-menu" role="menu"><button id="owned-option" type="button" role="menuitem">Upload files</button></div>');await page.evaluate(()=>document.querySelector('#owned-option').addEventListener('click',()=>{document.querySelector('#multi-image').click();document.querySelector('#owned-option').setAttribute('aria-disabled','true')}));const during=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.match(during.message,/选择文件期间已禁用/);assert.equal(during.code,'workflow_attachment_not_ready');assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+  });
+  await check('a pointerdown or mousedown directly triggered file control is captured synchronously and stops all later entry phases',async()=>{
+   for(const trigger of ['pointerdown','mousedown']){
+    await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div>');
+    await page.evaluate(({trigger,pictures})=>{window.__entryEvents=[];window.__fileClicks=[];const input=document.querySelector('#multi-image');input.addEventListener('click',event=>window.__fileClicks.push({id:event.target.id,prevented:event.defaultPrevented}));input.addEventListener('change',()=>document.querySelector('form').insertAdjacentHTML('beforeend',pictures.map(src=>`<div data-testid="composer-attachment"><img width="64" height="64" src="${src}" alt="Image"></div>`).join('')));for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])document.querySelector('#add').addEventListener(type,()=>{window.__entryEvents.push(type);if(type===trigger)input.click();else if(type==='click')document.querySelector('#image-video').click()})},{trigger,pictures:[picture('red'),picture('blue')]});
+    await page.evaluate(value=>module.exports.attach(value),task);assert.equal((await state()).ready,true);assert.equal((await page.evaluate(()=>window.__entryEvents)).at(-1),trigger);assert.deepEqual(await page.evaluate(()=>window.__fileClicks),[{id:'multi-image',prevented:true}]);assert.equal(await page.locator('#image-video').evaluate(input=>input.files.length),0);
+   }
+  });
+  await check('wrong-type, dialog and multiple file clicks from any opening phase reject before assigning files',async()=>{
+   for(const trigger of ['pointerdown','mousedown'])for(const invalid of ['audio','dialog','double']){
+    await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div><input id="audio" type="file" accept="audio/*"><div role="dialog"><input id="dialog-input" type="file" multiple accept="image/*"></div>');
+    await page.evaluate(({trigger,invalid})=>document.querySelector('#add').addEventListener(trigger,()=>{if(invalid==='audio')document.querySelector('#audio').click();else if(invalid==='dialog')document.querySelector('#dialog-input').click();else{document.querySelector('#multi-image').click();document.querySelector('#image-video').click()}}),{trigger,invalid});
+    const failure=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.match(failure.message,/多个或不适用/);assert.equal(failure.code,'workflow_attachment_not_ready');assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+   }
+  });
+  await check('trusted interaction during an opening-phase render wait revokes the next click fallback and all file selection',async()=>{
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div><button id="project" type="button">Project attachments</button>');
+   await page.evaluate(()=>{window.__pointerStarted=false;window.__fallbackClicks=0;document.querySelector('#add').addEventListener('pointerdown',()=>window.__pointerStarted=true);document.querySelector('#add').addEventListener('click',()=>{window.__fallbackClicks++;document.querySelector('#multi-image').click()})});
+   await page.evaluate(value=>{window.__attachResult=null;module.exports.attach(value).then(()=>window.__attachResult={ok:true}).catch(error=>window.__attachResult={message:error.message,code:error.code})},{...task,step_phase:'ready'});await page.waitForFunction(()=>window.__pointerStarted);await page.getByRole('button',{name:'Project attachments',exact:true}).click();await page.waitForFunction(()=>window.__attachResult!==null);assert.equal(await page.evaluate(()=>window.__attachResult.code),'workflow_upload_interrupted');assert.equal(await page.evaluate(()=>window.__fallbackClicks),0);assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+  });
+  await check('opening-phase draft, editor, task or entry replacement aborts before selecting files',async()=>{
+   for(const mutation of ['draft','editor','task','entry']){
+    await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div>');
+    await page.evaluate(mutation=>document.querySelector('#add').addEventListener('pointerdown',()=>{if(mutation==='draft')document.querySelector('#prompt-textarea').value='foreign draft';else if(mutation==='editor'){const box=document.querySelector('#prompt-textarea');box.replaceWith(box.cloneNode(true))}else if(mutation==='task')window.__currentTask.step_token='different-step';else{const control=document.querySelector('#add');control.replaceWith(control.cloneNode(true))}}),mutation);
+    const failure=await page.evaluate(async value=>{window.__currentTask=value;try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.match(failure.message,/已变化|其他草稿/);assert.equal(failure.code,'workflow_attachment_not_ready');assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+   }
+  });
+  await check('real React async pointerdown commit opens once before click fallback in both new-chat and continuation isolated worlds',async()=>{
+   for(const step of [1,3]){
+    await load('<div id="react-root"></div>');await page.evaluate(pictures=>window.__fixturePictures=pictures,[picture('red'),picture('blue')]);await page.addScriptTag({content:reactGestureBundle});await page.waitForSelector('#add');
+    const cdp=await page.context().newCDPSession(page),{frameTree}=await cdp.send('Page.getFrameTree');const {executionContextId}=await cdp.send('Page.createIsolatedWorld',{frameId:frameTree.frame.id,worldName:'workbench-react-opening-isolated-fixture-'+step});
+    const setup=await cdp.send('Runtime.evaluate',{contextId:executionContextId,expression:"window.module={exports:{}};window.chrome={runtime:{getManifest:()=>({version:'react-isolated-fixture'}),sendMessage:async()=>({ok:true,value:{ok:true}})}};"+source,returnByValue:true});assert(!setup.exceptionDetails);
+    const current={...task,step_number:step,step_token:'react-step-'+step,step_phase:'ready'},proof=await cdp.send('Runtime.evaluate',{contextId:executionContextId,expression:'(async()=>{await module.exports.attach('+JSON.stringify(current)+');return module.exports.attachmentState('+JSON.stringify(current)+')})()',awaitPromise:true,returnByValue:true});assert(!proof.exceptionDetails,JSON.stringify(proof.exceptionDetails));assert.equal(proof.result.value.ready,true);assert.deepEqual(await page.evaluate(()=>window.__reactEvents),['pointerdown','menu-click']);assert.deepEqual(await page.evaluate(()=>window.__reactInputDefault),[true]);assert.equal(await page.locator('#multi-image').evaluate(input=>input.files.length),2);assert(await page.locator('#single-image,#image-video,#any-file').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));await cdp.detach();
+   }
+  });
   await check('current Chinese and English photo-and-file menus resolve existing ambiguous inputs through their own synchronous input click',async()=>{
    for(const menuLabel of ['添加照片和文件','Upload photos and files','Add photos and files']){
     await load('<div>'+form(fourInputs)+'<button id="add" aria-label="添加文件等内容">+</button></div>');
@@ -153,6 +259,11 @@ const fourInputs='<input id="single-image" type="file" accept="image/*"><input i
    await page.evaluate(()=>document.querySelector('#add').addEventListener('click',()=>setTimeout(()=>{const menu=document.createElement('button');menu.setAttribute('role','menuitem');menu.textContent='Upload files';menu.addEventListener('click',()=>document.querySelector('#foreign-input').click());document.body.append(menu)},0)));
    const failure=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});
    assert.match(failure.message,/找不到当前上传控件的唯一/);assert.equal(failure.code,'workflow_attachment_not_ready');assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
+  });
+  await check('an asynchronous foreign menu appearing between opening phases never enters a later synchronous portal whitelist',async()=>{
+   await load('<div>'+form(fourInputs)+'<button id="add" type="button" aria-label="Add files">+</button></div><input id="foreign-input" type="file" multiple accept="image/*">');
+   await page.evaluate(()=>{window.__foreignClicks=0;window.__phaseEvents=[];const control=document.querySelector('#add');for(const type of ['pointerdown','mousedown','pointerup','mouseup','click'])control.addEventListener(type,()=>window.__phaseEvents.push(type));control.addEventListener('pointerdown',()=>setTimeout(()=>{const menu=document.createElement('button');menu.setAttribute('role','menuitem');menu.textContent='Upload files';menu.addEventListener('click',()=>{window.__foreignClicks++;document.querySelector('#foreign-input').click()});document.body.append(menu)},10))});
+   const failure=await page.evaluate(async value=>{try{await module.exports.attach(value);return {}}catch(error){return {message:error.message,code:error.code}}},{...task,step_phase:'ready'});assert.match(failure.message,/找不到当前上传控件的唯一/);assert.equal(failure.code,'workflow_attachment_not_ready');assert.equal(await page.evaluate(()=>window.__foreignClicks),0);assert.deepEqual(await page.evaluate(()=>window.__phaseEvents),['pointerdown','mousedown','pointerup','mouseup','click']);assert(await page.locator('input[type=file]').evaluateAll(inputs=>inputs.every(input=>input.files.length===0)));
   });
   await check('an asynchronously mounted menu with explicit aria-controls still resolves only its own synchronous file target',async()=>{
    await load('<div>'+form(fourInputs)+'<button id="add" aria-label="Add files" aria-controls="owned-menu">+</button></div>');
