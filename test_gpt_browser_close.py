@@ -41,6 +41,57 @@ class BrowserCloseTests(unittest.TestCase):
             self.assertFalse(profiles.close_profile(self.temp.name, row['id'])['ok'])
             scan.assert_not_called()
 
+    def test_unreadable_chrome_is_unknown_and_cannot_claim_closed_or_reopen(self):
+        for field in ('cmdline', 'exe'):
+            info = dict(name='chrome.exe', exe=self.rows[0]['executable'],
+                        cmdline=['chrome.exe', '--user-data-dir=' + self.rows[0]['profile_path']])
+            info[field] = None
+            with self.subTest(field=field), \
+                    patch.object(profiles.psutil, 'process_iter', return_value=[SimpleNamespace(info=info)]), \
+                    patch.object(profiles, '_profiles', return_value=[self.rows[0]]), \
+                    patch.object(profiles, '_unavailable', return_value=''), \
+                    patch.object(profiles.ctypes, 'WinDLL', create=True) as windows:
+                profiles.LAST_OPENED[self.rows[0]['id']] = 123
+                self.assertIsNone(profiles.catalog(self.temp.name)[0]['running'])
+                result = profiles.close_profile(self.temp.name, self.rows[0]['id'])
+                self.assertFalse(result['ok'])
+                self.assertNotIn('closed', result['results'][0])
+                self.assertEqual(profiles.LAST_OPENED[self.rows[0]['id']], 123)
+                with self.assertRaisesRegex(ValueError, '无法确认'):
+                    profiles._chrome_process(self.rows[0])
+                windows.assert_not_called()
+        profiles.LAST_OPENED.pop(self.rows[0]['id'], None)
+
+    def test_access_denied_and_failed_enumeration_do_not_prove_absence(self):
+        class Denied:
+            @property
+            def info(self):
+                raise profiles.psutil.AccessDenied(pid=42)
+        for result, error in (([Denied()], None), (None, profiles.psutil.AccessDenied(pid=42))):
+            with self.subTest(error=error), \
+                    patch.object(profiles.psutil, 'process_iter', return_value=result, side_effect=error):
+                scan = profiles._chrome_processes(self.rows)
+                self.assertTrue(all(profiles._process_unknown(scan, row['id']) for row in self.rows))
+
+    def test_unreadable_different_executable_does_not_hide_a_confirmed_absence(self):
+        other = SimpleNamespace(info=dict(name='chrome.exe',
+                                exe=str(Path(self.temp.name) / 'other/chrome.exe'), cmdline=None))
+        with patch.object(profiles.psutil, 'process_iter', return_value=[other]), \
+                patch.object(profiles, '_profiles', return_value=self.rows), \
+                patch.object(profiles, '_unavailable', return_value=''):
+            self.assertTrue(all(row['running'] is False for row in profiles.catalog(self.temp.name)))
+            self.assertTrue(profiles.close_profile(self.temp.name, self.rows[0]['id'])['results'][0]['closed'])
+
+    def test_positive_match_wins_over_an_unreadable_sibling(self):
+        exact = SimpleNamespace(info=dict(name='chrome.exe', exe=self.rows[0]['executable'],
+                                cmdline=['chrome.exe', '--user-data-dir=' + self.rows[0]['profile_path']]))
+        unknown = SimpleNamespace(info=dict(name='chrome.exe', exe=self.rows[0]['executable'], cmdline=None))
+        with patch.object(profiles.psutil, 'process_iter', return_value=[unknown, exact]):
+            scan = profiles._chrome_processes(self.rows)
+            self.assertIs(scan[self.rows[0]['id']], exact)
+            self.assertFalse(profiles._process_unknown(scan, self.rows[0]['id']))
+            self.assertTrue(profiles._process_unknown(scan, self.rows[1]['id']))
+
     def test_unknown_ids_cannot_supply_a_pid_or_path(self):
         with patch.object(profiles, '_profiles', return_value=self.rows), \
                 patch.object(profiles, '_request_close') as close:

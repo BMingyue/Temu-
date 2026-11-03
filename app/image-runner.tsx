@@ -27,7 +27,7 @@ type BrowserProfile = {
   unavailable_reason?: string;
   include_in_all: boolean;
   managed?: boolean;
-  running?: boolean;
+  running?: boolean | null;
   extension_auto_load?: boolean;
   extension_version?: string;
 };
@@ -281,7 +281,9 @@ export default function ImageRunner() {
           <span className={'tag ' + (ready ? 'green' : 'amber')}>
             {profile.managed && profile.running === false
               ? '已关闭'
-              : workerStatus(row)}
+              : profile.managed && profile.running === null && !row?.online
+                ? '状态待确认'
+                : workerStatus(row)}
           </span>
         </div>
         <p className="panelnote" style={{ margin: '10px 0 6px' }}>
@@ -299,7 +301,9 @@ export default function ImageRunner() {
         >
           {!profile.available
             ? profile.unavailable_reason
-            : quota?.blocked
+            : profile.managed && profile.running === null && !row?.online
+              ? '暂时无法确认窗口状态，请从任务栏检查或稍后重试'
+              : quota?.blocked
               ? `最早 ${localTime(quota.until * 1000)} 恢复`
               : row?.circuit?.open
                 ? `连续 ${row.circuit.consecutive} 次异常，等待 ${row.circuit.wait_seconds} 秒`
