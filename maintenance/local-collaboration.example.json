@@ -1,0 +1,8 @@
+{
+  "description": "复制到本机忽略文件 maintenance/local-collaboration.json；仅作为代理可读的本机位置说明，不自动执行命令。",
+  "github_login": "填写本人的GitHub用户名",
+  "peer_github_login": "填写另一维护者的GitHub用户名",
+  "development_root": "填写本机开发仓库或worktree的绝对路径",
+  "running_workbench_root": "填写本机实际运行目录；不运行时留空",
+  "shared_memory_index": "有本机共享记忆时填写其INDEX.md绝对路径；没有时留空"
+}

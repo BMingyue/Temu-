@@ -4,6 +4,13 @@
 !/.gitattributes
 !/README.md
 !/AGENTS.md
+!/COLLABORATION.md
+!/.github/
+/.github/*
+!/.github/pull_request_template.md
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/collaboration-checks.yml
 !/GIT使用说明.md
 !/Git版本管理.cmd
 !/从GitHub安装更新.cmd
@@ -66,6 +73,7 @@
 **/.migration/
 **/.openai/
 **/.env*
+/maintenance/local-collaboration.json
 **/*.pyc
 **/*.pyo
 **/*.log

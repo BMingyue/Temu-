@@ -1,0 +1,68 @@
+name: Collaboration checks
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collaboration-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: collaboration-static
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Official actions/checkout v4 tag, verified with git ls-remote.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the checker from the exact trusted base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          checker="$RUNNER_TEMP/tw-check-collaboration.py"
+          if ! git cat-file -e "$BASE_SHA:maintenance/check_collaboration.py"; then
+            echo '::error::Bootstrap: the base has no trusted checker. Independently review and install this first rules PR before enabling required checks or automatic merging.'
+            exit 1
+          fi
+          git show "$BASE_SHA:maintenance/check_collaboration.py" > "$checker"
+          python3 "$checker" --root "$GITHUB_WORKSPACE" --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  gate-tests:
+    name: collaboration-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Exercise the installed trusted checker on offline Git fixtures
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f maintenance/test_collaboration.py ]; then
+            echo '::error::Bootstrap: trusted gate tests are not installed on the base. First rules PR requires independent installation review.'
+            exit 1
+          fi
+          python3 maintenance/test_collaboration.py
+
+# These are static checks, not business validation or an approval/merge bot.
+# Changes to this workflow or the gate require independent maintainer review.
+# The workflow itself is PR-controlled; branch/repository rules must protect
+# that control plane before anyone relies on these statuses for auto-merge.
