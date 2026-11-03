@@ -144,13 +144,13 @@
   let interrupted=false,pointerDefaultPrevented=false,lastPhase='existing-menu';
   const events=['pointerdown','pointerup','mousedown','mouseup','touchstart','keydown','keyup','click','input','paste','drop','wheel'];
   const cancel=event=>{if(event.isTrusted)interrupted=true};
-  const verify=()=>{
+  const verify=(allowInitialDisabled=false)=>{
    if(interrupted)throw workflowFailure('用户正在操作当前页面，已取消本次附件选择；请确认草稿和菜单后再继续','workflow_upload_interrupted');
    if(!box)throw attachmentFailure(task,'打开附件菜单前未找到 GPT 输入框，已停止上传');
    if(box.isConnected===false)throw attachmentFailure(task,'打开附件菜单期间原 GPT 输入框已从页面移除，已停止上传');
    if(composer()!==box)throw attachmentFailure(task,'打开附件菜单期间 GPT 输入框节点已变化，已停止上传');
    if(control.isConnected===false)throw attachmentFailure(task,'打开附件菜单期间添加文件按钮已从页面移除，已停止上传');
-   if(uploadActionDisabled(control))throw attachmentFailure(task,'打开附件菜单期间添加文件控件已禁用，已停止上传');
+   if(!allowInitialDisabled&&uploadActionDisabled(control))throw attachmentFailure(task,'打开附件菜单期间添加文件控件已禁用，已停止上传');
    if(uploadControl()!==control)throw attachmentFailure(task,'打开附件菜单期间添加文件入口已变化或不唯一，已停止上传');
    if(attachmentKey(task)!==key)throw attachmentFailure(task,'打开附件菜单期间本步骤身份已变化，已停止上传');
    if(composerText(box).trim())throw attachmentFailure(task,'打开附件菜单期间输入框出现其他草稿，已停止上传');
@@ -158,6 +158,20 @@
   const opened=()=>Boolean(uploadMenu(control,beforeVisible,createdDuringClick))||control.getAttribute('aria-expanded')==='true'||control.getAttribute('data-state')==='open';
   for(const type of events)document.addEventListener(type,cancel,true);
   try{
+   verify(true);
+   if(uploadActionDisabled(control)){
+    // The composer may still be hydrating after opening the original chat.
+    // Wait only before the first activation, on this exact owned node. No
+    // synthetic input or file-picker authority exists during this wait.
+    const readyDeadline=Date.now()+20000;
+    while(true){
+     verify(true);
+     const remaining=readyDeadline-Date.now();
+     if(!uploadActionDisabled(control)&&remaining>=0)break;
+     if(remaining<=0)throw attachmentFailure(task,'等待 20 秒后添加文件控件仍已禁用，已停止上传');
+     await sleep(Math.min(250,remaining));
+    }
+   }
    verify();
    // Reuse an already open, owned menu. Opening its trigger again can close
    // it. Menu options retain their existing single click-only activation.
