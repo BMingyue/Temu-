@@ -27,6 +27,7 @@ type BrowserProfile = {
   unavailable_reason?: string;
   include_in_all: boolean;
   managed?: boolean;
+  running?: boolean;
   extension_auto_load?: boolean;
   extension_version?: string;
 };
@@ -69,6 +70,21 @@ export default function ImageRunner() {
   const [opening, setOpening] = useState('');
   const [count, setCount] = useState('1');
   const [prefix, setPrefix] = useState('Chrome 生图');
+  const [showClosedProfiles, setShowClosedProfiles] = useState(false);
+  useEffect(() => {
+    try {
+      setShowClosedProfiles(
+        localStorage.getItem('workbench.gpt.showClosedProfiles') === 'true',
+      );
+    } catch {}
+  }, []);
+  function toggleClosedProfiles() {
+    const next = !showClosedProfiles;
+    setShowClosedProfiles(next);
+    try {
+      localStorage.setItem('workbench.gpt.showClosedProfiles', String(next));
+    } catch {}
+  }
   useEffect(() => {
     let cancelled = false;
     async function refresh() {
@@ -138,6 +154,22 @@ export default function ImageRunner() {
       setOpening('');
     }
   }
+  async function closeBrowser(profileId: string) {
+    setOpening('close:' + profileId);
+    setLaunchError('');
+    setLaunchMessage('');
+    try {
+      feedback(
+        await request('/api/gpt-browser-profiles/close', {
+          profile_id: profileId,
+        }),
+      );
+    } catch (e: unknown) {
+      setLaunchError(errorMessage(e));
+    } finally {
+      setOpening('');
+    }
+  }
   async function createBrowsers() {
     const amount = Number(count),
       maximum = state.browser_creation?.max_per_request || 20;
@@ -192,10 +224,23 @@ export default function ImageRunner() {
       setError(errorMessage(e));
     }
   }
-  const profiles = state.browser_profiles || [],
-    workers = state.workers || [];
+  const profiles = state.browser_profiles || [];
+  const workers = (state.workers || []).map((worker) => {
+    const profile = profiles.find(
+      (p) => p.browser === worker.browser && p.worker_id === worker.worker_id,
+    );
+    return profile?.managed && profile.running === false
+      ? { ...worker, online: false }
+      : worker;
+  });
   const chrome = profiles.filter((p) => p.browser === 'chrome'),
     legacy = profiles.filter((p) => p.browser !== 'chrome');
+  const closedCount = chrome.filter(
+    (p) => p.managed && p.running === false,
+  ).length;
+  const visibleChrome = chrome.filter(
+    (p) => showClosedProfiles || !p.managed || p.running !== false,
+  );
   const unmatched = workers.filter(
     (w) =>
       !profiles.some(
@@ -234,7 +279,9 @@ export default function ImageRunner() {
         >
           <strong style={{ overflowWrap: 'anywhere' }}>{profile.label}</strong>
           <span className={'tag ' + (ready ? 'green' : 'amber')}>
-            {workerStatus(row)}
+            {profile.managed && profile.running === false
+              ? '已关闭'
+              : workerStatus(row)}
           </span>
         </div>
         <p className="panelnote" style={{ margin: '10px 0 6px' }}>
@@ -271,15 +318,29 @@ export default function ImageRunner() {
             最近连接 {localTime(row.last_seen)}
           </p>
         )}
-        <Button
-          variant={profile.managed ? 'default' : 'outline'}
-          disabled={!!opening || !profile.available}
-          onClick={() => {
-            void openBrowser(profile.id);
-          }}
-        >
-          {opening === profile.id ? '正在打开…' : '打开 ' + profile.label}
-        </Button>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <Button
+            variant={profile.managed ? 'default' : 'outline'}
+            disabled={!!opening || !profile.available}
+            onClick={() => {
+              void openBrowser(profile.id);
+            }}
+          >
+            {opening === profile.id ? '正在打开…' : '打开 ' + profile.label}
+          </Button>
+          {profile.managed && (
+            <Button
+              variant="outline"
+              aria-label={'关闭 ' + profile.label}
+              disabled={!!opening || !profile.running}
+              onClick={() => {
+                void closeBrowser(profile.id);
+              }}
+            >
+              {opening === 'close:' + profile.id ? '正在关闭…' : '关闭窗口'}
+            </Button>
+          )}
+        </div>
       </article>
     );
   }
@@ -368,12 +429,32 @@ export default function ImageRunner() {
                 : `打开全部 ${chrome.length} 个 Chrome`}
             </Button>
           )}
+          {chrome.some((p) => p.managed) && (
+            <Button
+              variant="outline"
+              disabled={
+                !!opening || !chrome.some((p) => p.managed && p.running)
+              }
+              onClick={() => {
+                void closeBrowser('chrome-all');
+              }}
+            >
+              {opening === 'close:chrome-all'
+                ? '正在关闭…'
+                : '关闭全部生图窗口'}
+            </Button>
+          )}
         </div>
         <p className="panelnote" style={{ marginBottom: 0 }}>
           {state.browser_creation?.available
             ? '使用工作台专用 Chrome，自动加载生图插件。登录资料保存在本地，关闭后可再次打开；可分次持续新增，数量按电脑性能安排。'
             : state.browser_creation?.message || '正在检查本机 Chrome 环境…'}
         </p>
+        {chrome.some((p) => p.managed) && (
+          <p className="panelnote" style={{ margin: '6px 0 0' }}>
+            关闭仅作用于工作台创建的生图窗口，登录资料会保留。正在生图的窗口关闭后，当前任务会中断。
+          </p>
+        )}
       </div>
       {launchMessage && (
         <p style={{ overflowWrap: 'anywhere' }}>
@@ -386,15 +467,48 @@ export default function ImageRunner() {
           {launchError}
         </p>
       )}
+      {!!chrome.length && (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            margin: '14px 0 10px',
+          }}
+        >
+          <p className="panelnote" style={{ margin: 0 }}>
+            窗口列表 · 显示 {visibleChrome.length}/{chrome.length} 个
+          </p>
+          {closedCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-expanded={showClosedProfiles}
+              onClick={toggleClosedProfiles}
+            >
+              {showClosedProfiles
+                ? '隐藏已关闭窗口'
+                : `显示已关闭窗口（${closedCount}）`}
+            </Button>
+          )}
+        </div>
+      )}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
           gap: 12,
         }}
       >
-        {chrome.map(profileCard)}
+        {visibleChrome.map(profileCard)}
       </div>
+      {!!chrome.length && !visibleChrome.length && (
+        <p className="panelnote">
+          生图窗口均已关闭，卡片已收起。可点击“打开全部”继续使用，或显示已关闭窗口。
+        </p>
+      )}
       {!!legacy.length && (
         <details style={{ marginTop: 18 }}>
           <summary style={{ cursor: 'pointer' }}>

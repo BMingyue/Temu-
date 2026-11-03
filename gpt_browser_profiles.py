@@ -255,13 +255,16 @@ def _installed_extension_version(row):
 
 
 def catalog(data):
+    rows = _profiles(data)
+    running = _chrome_processes(rows)
     return [
         dict(id=row['id'], label=row['label'], browser=row['browser'],
              worker_id=row.get('worker_id', ''), available=not bool(reason),
              unavailable_reason=reason, include_in_all=bool(row.get('include_in_all', True)),
              managed=bool(row.get('managed')), extension_auto_load=bool(row.get('managed')),
+             running=row['id'] in running,
              extension_version=_installed_extension_version(row), created_at=row.get('created_at', ''))
-        for row in _profiles(data)
+        for row in rows
         for reason in [_unavailable(row)]
     ]
 
@@ -296,20 +299,107 @@ def _firefox_process(row):
     return (defaults[0] if locked and len(defaults) == 1 else None), locked
 
 
-def _chrome_process(row):
+def _chrome_processes(rows):
+    profiles = {(_normalized_path(row['executable']), _normalized_path(row['profile_path'])): row['id']
+                for row in rows if row['browser'] == 'chrome' and row.get('managed')}
+    running = {}
+    if not profiles:
+        return running
     for process in psutil.process_iter(['name', 'exe', 'cmdline']):
         try:
             info = process.info
-            if (info['name'].lower() != 'chrome.exe' or not info['exe'] or
-                    not _same_path(info['exe'], row['executable'])):
+            if (info['name'].lower() != 'chrome.exe' or not info['exe']):
                 continue
             args = info['cmdline'] or []
             profile = next((arg.split('=', 1)[1] for arg in args if arg.startswith('--user-data-dir=')), None)
-            if profile and not any(arg.startswith('--type=') for arg in args) and _same_path(profile, row['profile_path']):
-                return process.pid
+            if profile and not any(arg.startswith('--type=') for arg in args):
+                ident = profiles.get((_normalized_path(info['exe']), _normalized_path(profile)))
+                if ident:
+                    running[ident] = process
         except (psutil.Error, OSError, ValueError, TypeError, AttributeError):
             continue
-    return None
+    return running
+
+
+def _normalized_path(path):
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def _chrome_process(row):
+    process = _chrome_processes([row]).get(row['id'])
+    return process.pid if process else None
+
+
+def _request_close(row):
+    """Post a normal close request only to this managed profile's own windows."""
+    if row['browser'] != 'chrome' or not row.get('managed'):
+        raise ValueError('只能关闭工作台创建的独立 Chrome 生图窗口')
+    if os.name != 'nt':
+        raise ValueError('当前系统不支持关闭独立 Chrome 窗口')
+    process = _chrome_processes([row]).get(row['id'])
+    if not process:
+        LAST_OPENED.pop(row['id'], None)
+        return dict(ok=True, id=row['id'], closed=True, message=row['label'] + ' 已关闭')
+
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostMessageW.restype = wintypes.BOOL
+    handles = []
+
+    @callback_type
+    def visit(handle, _param):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        if owner.value == process.pid and user32.IsWindowVisible(handle):
+            handles.append(handle)
+        return True
+
+    if not user32.EnumWindows(visit, 0):
+        raise ValueError(row['label'] + '：无法读取窗口，请稍后重试')
+    sent = 0
+    for handle in handles:
+        # Recheck process identity and window ownership before every request.
+        current = _chrome_processes([row]).get(row['id'])
+        if not current or current != process:
+            break
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+        if owner.value == process.pid and user32.PostMessageW(handle, 0x0010, 0, 0):
+            sent += 1  # WM_CLOSE lets Chrome save its session and login data.
+    LAST_OPENED.pop(row['id'], None)
+    if not sent and process.is_running():
+        raise ValueError(row['label'] + '：未找到可关闭的窗口，请从任务栏检查')
+    return dict(ok=True, id=row['id'], closed=not process.is_running(),
+                message='已请求关闭 ' + row['label'])
+
+
+def close_profile(data, ident):
+    """Close registered managed profiles; client-supplied paths/PIDs are never used."""
+    if not isinstance(ident, str):
+        raise ValueError('请选择要关闭的生图窗口')
+    with LOCK:
+        rows = _profiles(data)
+        if ident == 'chrome-all':
+            selected = [row for row in rows if row['browser'] == 'chrome' and row.get('managed')]
+        else:
+            selected = [row for row in rows if row['id'] == ident]
+        if not selected:
+            raise ValueError('未找到可关闭的生图窗口')
+        results = []
+        for row in selected:
+            try:
+                results.append(_request_close(row))
+            except (ValueError, psutil.Error, OSError) as error:
+                results.append(dict(ok=False, id=row['id'], message=str(error)))
+        # Return promptly. The regular status refresh observes Chrome's normal exit.
+        return dict(ok=any(row['ok'] for row in results), results=results,
+                    message='；'.join(row['message'] for row in results))
 
 
 def _focus_window(pid):
@@ -370,7 +460,11 @@ def _open(row):
                 raise ValueError('此配置的 Chrome 不支持自动加载扩展，请修复 Chrome for Testing 运行组件')
             _sync_extension(row)
             extension = str(Path(row['profile_path']).parent / 'extension')
-            extension_arguments = ['--load-extension=' + extension]
+            # Bundled Chrome for Testing 156 exits with code 3 on this machine
+            # when its compiled-in field-trial testing config is applied.
+            # Use default features while preserving extension loading and sandboxing.
+            extension_arguments = ['--disable-field-trial-config',
+                                   '--load-extension=' + extension]
         command = [row['executable'], '--user-data-dir=' + row['profile_path'],
                    '--profile-directory=' + row['profile_directory'],
                    *extension_arguments, '--no-first-run', '--new-window', CHATGPT_URL]

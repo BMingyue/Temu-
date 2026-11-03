@@ -18,7 +18,7 @@ WORKERS={}
 BROWSERS=('chrome','edge','firefox')
 PREFERENCE_ORDER=('edge','chrome','firefox')
 BROWSER_LABELS={'chrome':'Chrome','edge':'Edge','firefox':'Firefox'}
-TASK_GAP_SECONDS=300
+TASK_GAP_SECONDS=60
 TAKEOVER_SECONDS=3*60
 ONLINE_RESERVATION_SECONDS=60
 # Background GPT tabs are commonly throttled to one timer tick per minute.
